@@ -1,0 +1,79 @@
+:root {
+  font-family: "Inter Variable", Inter, system-ui, sans-serif;
+  color: #1d1d1f;
+  background: #e9e9eb;
+  font-synthesis: none;
+  --accent: #007aff;
+  --window-bg: #e9e9eb;
+  --sidebar-bg: rgba(246, 246, 246, 0.88);
+  --content-bg: #ffffff;
+  --panel-bg: #f7f7f9;
+  --card-bg: rgba(255, 255, 255, 0.72);
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-tertiary: #98989d;
+  --separator: rgba(0, 0, 0, 0.09);
+  --fill: rgba(118, 118, 128, 0.12);
+  --fill-strong: rgba(118, 118, 128, 0.2);
+  --green: #248a3d;
+  --red: #d70015;
+  --purple: #8944ab;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color: #f5f5f7;
+  background: #1c1c1e;
+  color-scheme: dark;
+  --accent: #0a84ff;
+  --window-bg: #1c1c1e;
+  --sidebar-bg: rgba(38, 38, 40, 0.9);
+  --content-bg: #242426;
+  --panel-bg: #2c2c2e;
+  --card-bg: rgba(58, 58, 60, 0.72);
+  --text-primary: #f5f5f7;
+  --text-secondary: #aeaeb2;
+  --text-tertiary: #8e8e93;
+  --separator: rgba(255, 255, 255, 0.1);
+  --fill: rgba(118, 118, 128, 0.24);
+  --fill-strong: rgba(118, 118, 128, 0.36);
+  --green: #30d158;
+  --red: #ff453a;
+  --purple: #bf5af2;
+  --shadow: 0 12px 34px rgba(0, 0, 0, 0.28);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color: #f5f5f7;
+    background: #1c1c1e;
+    color-scheme: dark;
+    --accent: #0a84ff;
+    --window-bg: #1c1c1e;
+    --sidebar-bg: rgba(38, 38, 40, 0.9);
+    --content-bg: #242426;
+    --panel-bg: #2c2c2e;
+    --card-bg: rgba(58, 58, 60, 0.72);
+    --text-primary: #f5f5f7;
+    --text-secondary: #aeaeb2;
+    --text-tertiary: #8e8e93;
+    --separator: rgba(255, 255, 255, 0.1);
+    --fill: rgba(118, 118, 128, 0.24);
+    --fill-strong: rgba(118, 118, 128, 0.36);
+    --green: #30d158;
+    --red: #ff453a;
+    --purple: #bf5af2;
+    --shadow: 0 12px 34px rgba(0, 0, 0, 0.28);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; min-width: 880px; height: 100%; margin: 0; }
+body { overflow: hidden; }
+button, input, select { font: inherit; }
+button { color: inherit; }

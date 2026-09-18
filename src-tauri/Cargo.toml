@@ -1,0 +1,28 @@
+[package]
+name = "voicifyai"
+version = "0.1.0"
+description = "VoicifyAI Desktop"
+authors = ["VoicifyAI"]
+edition = "2021"
+
+[lib]
+name = "voicifyai_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+cpal = "0.15"
+keyring = { version = "3", features = ["windows-native"] }
+open = "5"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2", features = [] }
+tungstenite = "0.28"
+url = "2"
+wasapi = "0.24"

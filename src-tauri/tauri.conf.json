@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VoicifyAI",
+  "version": "0.1.0",
+  "identifier": "ai.voicify.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev:desktop",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "VoicifyAI",
+        "width": 1240,
+        "height": 780,
+        "minWidth": 880,
+        "minHeight": 620,
+        "decorations": false,
+        "transparent": false,
+        "center": true
+      }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": true, "targets": "all" }
+}

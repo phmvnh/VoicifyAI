@@ -13,3 +13,13 @@ venv/
 # Ignore IDE, Editor Files
 .idea/
 .vscode/
+
+# Desktop frontend / Tauri build output
+node_modules/
+dist/
+src-tauri/target/
+.cargo-target-check/
+
+# Local frontend configuration and secrets
+.env
+.env.local
