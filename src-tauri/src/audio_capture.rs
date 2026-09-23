@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, TcpStream};
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -71,14 +70,12 @@ struct Runtime {
 
 pub struct CaptureManager {
     runtime: Mutex<Runtime>,
-    backend: Mutex<Option<Child>>,
 }
 
 impl Default for CaptureManager {
     fn default() -> Self {
         Self {
             runtime: Mutex::new(Runtime::default()),
-            backend: Mutex::new(None),
         }
     }
 }
@@ -95,65 +92,16 @@ impl CaptureManager {
 
     fn ensure_backend(&self) -> Result<(), String> {
         if backend_is_ready() {
-            return Ok(());
+            Ok(())
+        } else {
+            wait_for_backend()
         }
-
-        let mut backend = self
-            .backend
-            .lock()
-            .map_err(|_| "Không thể khóa tiến trình FastAPI")?;
-        if let Some(child) = backend.as_mut() {
-            if child
-                .try_wait()
-                .map_err(|error| error.to_string())?
-                .is_none()
-            {
-                return wait_for_backend();
-            }
-            *backend = None;
-        }
-
-        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .ok_or("Không xác định được thư mục dự án")?
-            .to_path_buf();
-        let mut command = Command::new("python.exe");
-        command
-            .args([
-                "-m",
-                "uvicorn",
-                "api.main:app",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "8765",
-            ])
-            .current_dir(project_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0800_0000);
-        }
-        let child = command
-            .spawn()
-            .map_err(|error| format!("Không thể khởi động FastAPI bằng Python: {error}"))?;
-        *backend = Some(child);
-        drop(backend);
-        wait_for_backend()
     }
 }
 
 impl Drop for CaptureManager {
     fn drop(&mut self) {
         self.stop_all();
-        if let Ok(mut backend) = self.backend.lock() {
-            if let Some(child) = backend.as_mut() {
-                let _ = child.kill();
-            }
-        }
     }
 }
 
@@ -171,7 +119,7 @@ fn wait_for_backend() -> Result<(), String> {
         thread::sleep(Duration::from_millis(150));
     }
     Err(
-        "FastAPI không khởi động trong 20 giây. Hãy kiểm tra Python và api/requirements.txt."
+        "Backend nhận dạng không khởi động trong 20 giây. Hãy đóng và mở lại VoicifyAI."
             .to_string(),
     )
 }

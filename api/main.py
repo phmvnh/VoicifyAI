@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ctypes
 import io
 import json
+import os
+import shutil
 import struct
 from typing import Annotated, Any, Literal, Optional
 
@@ -12,9 +15,12 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from ctranslate2 import get_cuda_device_count, get_supported_compute_types
 from faster_whisper import available_models
 
 from api.engine import EngineError, ModelConfig, engine
+from api.gpu_runtime import GpuRuntimeConflict, gpu_runtime
+from api.model_manager import ModelOperationConflict, model_downloads
 from api.streaming import StreamConfig, StreamingSession
 
 
@@ -75,12 +81,98 @@ app.add_middleware(
     allow_origins=[
         "http://127.0.0.1:1420",
         "http://localhost:1420",
+        # Tauri uses the HTTP custom protocol on Windows unless
+        # app.security.useHttpsScheme is explicitly enabled.
+        "http://tauri.localhost",
         "https://tauri.localhost",
         "tauri://localhost",
     ],
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+_cuda_runtime_handles: list[Any] = []
+_cuda_runtime_directories: set[str] = set()
+
+
+def _find_cuda_library(filename: str) -> str | None:
+    for directory in gpu_runtime.runtime_dirs():
+        candidate = directory / filename
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which(filename)
+
+
+def detect_cuda() -> dict[str, Any]:
+    try:
+        device_count = get_cuda_device_count()
+    except Exception as exc:
+        return {"available": False, "device_count": 0, "compute_types": [], "error": str(exc)}
+
+    if device_count < 1:
+        return {
+            "available": False,
+            "device_count": 0,
+            "compute_types": [],
+            "error": "Không phát hiện GPU NVIDIA tương thích.",
+        }
+
+    if os.name == "nt":
+        runtime_handles = []
+        new_runtime_directories: list[str] = []
+        try:
+            runtime_paths = []
+            for filename in ("cublas64_12.dll", "cublasLt64_12.dll", "cudnn64_9.dll"):
+                path = _find_cuda_library(filename)
+                if not path:
+                    raise OSError(f"Không tìm thấy {filename}")
+                runtime_paths.append(path)
+            for directory in {os.path.dirname(path) for path in runtime_paths}:
+                if directory not in _cuda_runtime_directories:
+                    runtime_handles.append(os.add_dll_directory(directory))
+                    new_runtime_directories.append(directory)
+            for path in runtime_paths:
+                ctypes.WinDLL(path)
+            _cuda_runtime_handles.extend(runtime_handles)
+            _cuda_runtime_directories.update(new_runtime_directories)
+            runtime_handles = []
+        except OSError as exc:
+            return {
+                "available": False,
+                "device_count": device_count,
+                "compute_types": [],
+                "error": f"GPU đã được phát hiện nhưng CUDA runtime chưa sẵn sàng: {exc}",
+            }
+        finally:
+            for handle in runtime_handles:
+                handle.close()
+
+    try:
+        compute_types = sorted(get_supported_compute_types("cuda"))
+    except Exception as exc:
+        return {
+            "available": False,
+            "device_count": device_count,
+            "compute_types": [],
+            "error": f"Không thể đọc khả năng CUDA: {exc}",
+        }
+    return {
+        "available": True,
+        "device_count": device_count,
+        "compute_types": compute_types,
+        "error": None,
+    }
+
+
+def detect_cpu() -> dict[str, Any]:
+    try:
+        return {
+            "compute_types": sorted(get_supported_compute_types("cpu")),
+            "error": None,
+        }
+    except Exception as exc:
+        return {"compute_types": [], "error": str(exc)}
 
 
 @app.get("/v1/health")
@@ -99,6 +191,76 @@ def health() -> dict[str, Any]:
 @app.get("/v1/models")
 def models() -> dict[str, list[str]]:
     return {"models": available_models()}
+
+
+@app.get("/v1/models/status")
+def model_statuses() -> dict[str, list[dict[str, Any]]]:
+    return {"models": model_downloads.list_statuses()}
+
+
+@app.post("/v1/models/{model}/download", status_code=202)
+def download_whisper_model(model: str) -> dict[str, Any]:
+    try:
+        return model_downloads.start_download(model)
+    except ModelOperationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/v1/models/{model}/download")
+def cancel_whisper_model_download(model: str) -> dict[str, Any]:
+    try:
+        return model_downloads.cancel_download(model)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/v1/models/{model}", status_code=202)
+def remove_whisper_model(model: str) -> dict[str, Any]:
+    if engine.is_busy:
+        raise HTTPException(status_code=409, detail="Không thể gỡ model khi tác vụ nhận diện đang chạy")
+    try:
+        engine.unload(model)
+        return model_downloads.start_remove(model)
+    except ModelOperationConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/v1/hardware")
+def hardware() -> dict[str, Any]:
+    return {"cpu": detect_cpu(), "cuda": detect_cuda()}
+
+
+@app.get("/v1/runtime/gpu/status")
+def gpu_runtime_status() -> dict[str, Any]:
+    return gpu_runtime.status()
+
+
+@app.post("/v1/runtime/gpu/install", status_code=202)
+def install_gpu_runtime() -> dict[str, Any]:
+    try:
+        return gpu_runtime.start_install()
+    except GpuRuntimeConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/v1/runtime/gpu/install")
+def cancel_gpu_runtime_install() -> dict[str, Any]:
+    return gpu_runtime.cancel_install()
+
+
+@app.delete("/v1/runtime/gpu", status_code=202)
+def remove_gpu_runtime() -> dict[str, Any]:
+    if engine.is_busy:
+        raise HTTPException(status_code=409, detail="Không thể gỡ tăng tốc GPU khi nhận diện đang chạy")
+    try:
+        engine.unload()
+        return gpu_runtime.start_remove()
+    except GpuRuntimeConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/v1/languages")

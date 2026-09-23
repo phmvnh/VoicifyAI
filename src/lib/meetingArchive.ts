@@ -27,12 +27,25 @@ export interface ArchiveDestinationsOutput {
   calendarUrl: string;
 }
 
+export interface ArchiveNamingSettings {
+  spreadsheetName: string;
+  calendarName: string;
+}
+
 export function archiveMeeting(input: ArchiveMeetingInput): Promise<ArchiveMeetingOutput> {
   return invoke<ArchiveMeetingOutput>("archive_meeting", { input });
 }
 
 export function prepareArchiveDestinations(): Promise<ArchiveDestinationsOutput> {
   return invoke<ArchiveDestinationsOutput>("prepare_archive_destinations");
+}
+
+export function getArchiveNamingSettings(): Promise<ArchiveNamingSettings> {
+  return invoke<ArchiveNamingSettings>("archive_naming_settings");
+}
+
+export function saveArchiveNamingSettings(input: ArchiveNamingSettings): Promise<ArchiveNamingSettings> {
+  return invoke<ArchiveNamingSettings>("save_archive_naming_settings", { input });
 }
 
 export function openArchiveUrl(url: string): Promise<void> {

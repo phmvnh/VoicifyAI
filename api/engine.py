@@ -44,6 +44,8 @@ class TranscriptionEngine:
         self._model: Optional[WhisperModel] = None
         self._config: Optional[ModelConfig] = None
         self._lock = threading.RLock()
+        self._activity_lock = threading.Lock()
+        self._active_requests = 0
 
     @property
     def is_loaded(self) -> bool:
@@ -53,9 +55,21 @@ class TranscriptionEngine:
     def config(self) -> Optional[ModelConfig]:
         return self._config
 
+    @property
+    def is_busy(self) -> bool:
+        with self._activity_lock:
+            return self._active_requests > 0
+
     def status(self) -> dict[str, Any]:
         config = asdict(self._config) if self._config else None
-        return {"model_loaded": self.is_loaded, "model_config": config}
+        return {"model_loaded": self.is_loaded, "model_config": config, "busy": self.is_busy}
+
+    def unload(self, model: str | None = None) -> None:
+        """Release an idle model before its cached files are removed."""
+        with self._lock:
+            if model is None or (self._config is not None and self._config.model == model):
+                self._model = None
+                self._config = None
 
     def load(self, config: ModelConfig) -> WhisperModel:
         with self._lock:
@@ -97,48 +111,54 @@ class TranscriptionEngine:
         if task not in {"transcribe", "translate"}:
             raise EngineError("task phải là 'transcribe' hoặc 'translate'")
 
-        with self._lock:
-            model = self.load(model_config)
-            started_at = time.perf_counter()
-            try:
-                segment_iterator, info = model.transcribe(
-                    audio,
-                    language=language,
-                    task=task,
-                    vad_filter=vad_filter,
-                    word_timestamps=word_timestamps,
-                    condition_on_previous_text=condition_on_previous_text,
-                    hallucination_silence_threshold=hallucination_silence_threshold,
-                    initial_prompt=initial_prompt,
-                    hotwords=hotwords,
-                )
-                segments = []
-                for segment in segment_iterator:
-                    words = None
-                    if segment.words is not None:
-                        words = [
-                            {
-                                "start": word.start,
-                                "end": word.end,
-                                "word": word.word,
-                                "probability": word.probability,
-                            }
-                            for word in segment.words
-                        ]
-                    segments.append(
-                        {
-                            "id": segment.id,
-                            "start": segment.start,
-                            "end": segment.end,
-                            "text": segment.text,
-                            "words": words,
-                            "avg_logprob": segment.avg_logprob,
-                            "no_speech_prob": segment.no_speech_prob,
-                            "compression_ratio": segment.compression_ratio,
-                        }
+        with self._activity_lock:
+            self._active_requests += 1
+        try:
+            with self._lock:
+                model = self.load(model_config)
+                started_at = time.perf_counter()
+                try:
+                    segment_iterator, info = model.transcribe(
+                        audio,
+                        language=language,
+                        task=task,
+                        vad_filter=vad_filter,
+                        word_timestamps=word_timestamps,
+                        condition_on_previous_text=condition_on_previous_text,
+                        hallucination_silence_threshold=hallucination_silence_threshold,
+                        initial_prompt=initial_prompt,
+                        hotwords=hotwords,
                     )
-            except Exception as exc:
-                raise EngineError(f"Nhận diện âm thanh thất bại: {exc}") from exc
+                    segments = []
+                    for segment in segment_iterator:
+                        words = None
+                        if segment.words is not None:
+                            words = [
+                                {
+                                    "start": word.start,
+                                    "end": word.end,
+                                    "word": word.word,
+                                    "probability": word.probability,
+                                }
+                                for word in segment.words
+                            ]
+                        segments.append(
+                            {
+                                "id": segment.id,
+                                "start": segment.start,
+                                "end": segment.end,
+                                "text": segment.text,
+                                "words": words,
+                                "avg_logprob": segment.avg_logprob,
+                                "no_speech_prob": segment.no_speech_prob,
+                                "compression_ratio": segment.compression_ratio,
+                            }
+                        )
+                except Exception as exc:
+                    raise EngineError(f"Nhận diện âm thanh thất bại: {exc}") from exc
+        finally:
+            with self._activity_lock:
+                self._active_requests -= 1
 
         elapsed = time.perf_counter() - started_at
         duration = float(info.duration)

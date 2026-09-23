@@ -59,10 +59,19 @@ struct MeetingRecord {
 #[serde(rename_all = "camelCase")]
 struct ArchiveSettings {
     owner_google_user_id: Option<String>,
+    spreadsheet_name: Option<String>,
+    calendar_name: Option<String>,
     spreadsheet_id: Option<String>,
     sheet_id: Option<i64>,
     calendar_id: Option<String>,
     meetings: HashMap<String, MeetingRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveNamingSettings {
+    spreadsheet_name: String,
+    calendar_name: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -143,6 +152,30 @@ pub async fn prepare_archive_destinations(
 }
 
 #[tauri::command]
+pub fn archive_naming_settings(
+    store: State<'_, Arc<MeetingArchiveStore>>,
+) -> Result<ArchiveNamingSettings, String> {
+    let google_user_id = google_user_id()?;
+    let settings = store.load()?;
+    if settings.owner_google_user_id.as_deref() != Some(&google_user_id) {
+        return Ok(default_archive_names());
+    }
+    Ok(effective_archive_names(&settings))
+}
+
+#[tauri::command]
+pub async fn save_archive_naming_settings(
+    input: ArchiveNamingSettings,
+    store: State<'_, Arc<MeetingArchiveStore>>,
+) -> Result<ArchiveNamingSettings, String> {
+    let names = validate_archive_names(input)?;
+    let store = Arc::clone(store.inner());
+    tauri::async_runtime::spawn_blocking(move || save_archive_names(names, &store))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 pub fn open_archive_url(url: String) -> Result<(), String> {
     let parsed = Url::parse(&url).map_err(|_| "URL Google không hợp lệ.".to_string())?;
     if !is_allowed_archive_url(&parsed) {
@@ -188,13 +221,15 @@ fn archive(
     });
     store.save(&settings)?;
 
-    let spreadsheet = api.ensure_spreadsheet(settings.spreadsheet_id.as_deref())?;
+    let names = effective_archive_names(&settings);
+    let spreadsheet =
+        api.ensure_spreadsheet(settings.spreadsheet_id.as_deref(), &names.spreadsheet_name)?;
     settings.spreadsheet_id = Some(spreadsheet.id.clone());
     let sheet_id = api.ensure_archive_sheet(&spreadsheet.id, settings.sheet_id)?;
     settings.sheet_id = Some(sheet_id);
     store.save(&settings)?;
 
-    let calendar = api.ensure_calendar(settings.calendar_id.as_deref())?;
+    let calendar = api.ensure_calendar(settings.calendar_id.as_deref(), &names.calendar_name)?;
     settings.calendar_id = Some(calendar.id.clone());
     store.save(&settings)?;
 
@@ -252,12 +287,14 @@ fn prepare_destinations(store: &MeetingArchiveStore) -> Result<ArchiveDestinatio
     let token = google_access_token()?;
     let api = GoogleApi::new(token)?;
 
-    let spreadsheet = api.ensure_spreadsheet(settings.spreadsheet_id.as_deref())?;
+    let names = effective_archive_names(&settings);
+    let spreadsheet =
+        api.ensure_spreadsheet(settings.spreadsheet_id.as_deref(), &names.spreadsheet_name)?;
     settings.spreadsheet_id = Some(spreadsheet.id.clone());
     let sheet_id = api.ensure_archive_sheet(&spreadsheet.id, settings.sheet_id)?;
     settings.sheet_id = Some(sheet_id);
 
-    let calendar = api.ensure_calendar(settings.calendar_id.as_deref())?;
+    let calendar = api.ensure_calendar(settings.calendar_id.as_deref(), &names.calendar_name)?;
     settings.calendar_id = Some(calendar.id.clone());
     store.save(&settings)?;
 
@@ -268,6 +305,76 @@ fn prepare_destinations(store: &MeetingArchiveStore) -> Result<ArchiveDestinatio
         ),
         calendar_url: calendar_view_url(&calendar.id, DEFAULT_TIME_ZONE),
     })
+}
+
+fn default_archive_names() -> ArchiveNamingSettings {
+    ArchiveNamingSettings {
+        spreadsheet_name: SPREADSHEET_NAME.to_string(),
+        calendar_name: CALENDAR_NAME.to_string(),
+    }
+}
+
+fn effective_archive_names(settings: &ArchiveSettings) -> ArchiveNamingSettings {
+    ArchiveNamingSettings {
+        spreadsheet_name: settings
+            .spreadsheet_name
+            .clone()
+            .unwrap_or_else(|| SPREADSHEET_NAME.to_string()),
+        calendar_name: settings
+            .calendar_name
+            .clone()
+            .unwrap_or_else(|| CALENDAR_NAME.to_string()),
+    }
+}
+
+fn validate_archive_names(input: ArchiveNamingSettings) -> Result<ArchiveNamingSettings, String> {
+    fn validate(value: String, label: &str) -> Result<String, String> {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            return Err(format!("{label} không được để trống."));
+        }
+        if value.chars().count() > 100 {
+            return Err(format!("{label} không được vượt quá 100 ký tự."));
+        }
+        Ok(value)
+    }
+
+    Ok(ArchiveNamingSettings {
+        spreadsheet_name: validate(input.spreadsheet_name, "Tên Google Sheet")?,
+        calendar_name: validate(input.calendar_name, "Tên Google Calendar")?,
+    })
+}
+
+fn save_archive_names(
+    names: ArchiveNamingSettings,
+    store: &MeetingArchiveStore,
+) -> Result<ArchiveNamingSettings, String> {
+    let _guard = store
+        .operation_lock
+        .lock()
+        .map_err(|_| "Khóa Meeting Archive đã bị lỗi.".to_string())?;
+    let google_user_id = google_user_id()?;
+    let mut settings = store.load()?;
+    if settings.owner_google_user_id.as_deref() != Some(&google_user_id) {
+        settings = ArchiveSettings {
+            owner_google_user_id: Some(google_user_id),
+            ..ArchiveSettings::default()
+        };
+    }
+    settings.spreadsheet_name = Some(names.spreadsheet_name.clone());
+    settings.calendar_name = Some(names.calendar_name.clone());
+    store.save(&settings)?;
+
+    if settings.spreadsheet_id.is_some() || settings.calendar_id.is_some() {
+        let api = GoogleApi::new(google_access_token()?)?;
+        if let Some(id) = settings.spreadsheet_id.as_deref() {
+            api.rename_spreadsheet(id, &names.spreadsheet_name)?;
+        }
+        if let Some(id) = settings.calendar_id.as_deref() {
+            api.rename_calendar(id, &names.calendar_name)?;
+        }
+    }
+    Ok(names)
 }
 
 fn stored_destinations(
@@ -457,7 +564,7 @@ impl GoogleApi {
         })
     }
 
-    fn ensure_spreadsheet(&self, saved_id: Option<&str>) -> Result<Resource, String> {
+    fn ensure_spreadsheet(&self, saved_id: Option<&str>, name: &str) -> Result<Resource, String> {
         if let Some(id) = saved_id {
             let response = self
                 .client
@@ -475,7 +582,7 @@ impl GoogleApi {
         }
         let query = format!(
             "name='{}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
-            drive_query_value(SPREADSHEET_NAME)
+            drive_query_value(name)
         );
         let list: DriveFileList = self.json(
             self.client
@@ -504,7 +611,7 @@ impl GoogleApi {
                 .bearer_auth(&self.token)
                 .query(&[("fields", "id,webViewLink")])
                 .json(&json!({
-                    "name": SPREADSHEET_NAME,
+                    "name": name,
                     "mimeType": "application/vnd.google-apps.spreadsheet"
                 }))
                 .send()
@@ -516,6 +623,19 @@ impl GoogleApi {
             }),
             id: file.id,
         })
+    }
+
+    fn rename_spreadsheet(&self, id: &str, name: &str) -> Result<(), String> {
+        let _: DriveFile = self.json(
+            self.client
+                .patch(format!("https://www.googleapis.com/drive/v3/files/{id}"))
+                .bearer_auth(&self.token)
+                .query(&[("fields", "id")])
+                .json(&json!({"name": name}))
+                .send()
+                .map_err(api_network_error)?,
+        )?;
+        Ok(())
     }
 
     fn ensure_archive_sheet(
@@ -591,7 +711,7 @@ impl GoogleApi {
         Ok(sheet_id)
     }
 
-    fn ensure_calendar(&self, saved_id: Option<&str>) -> Result<Resource, String> {
+    fn ensure_calendar(&self, saved_id: Option<&str>, name: &str) -> Result<Resource, String> {
         if let Some(id) = saved_id {
             let response = self
                 .client
@@ -616,7 +736,7 @@ impl GoogleApi {
                 .send()
                 .map_err(api_network_error)?,
         )?;
-        if let Some(calendar) = find_calendar(list.items, CALENDAR_NAME) {
+        if let Some(calendar) = find_calendar(list.items, name) {
             return Ok(Resource {
                 id: calendar.id,
                 url: "https://calendar.google.com/calendar/u/0/r".to_string(),
@@ -626,7 +746,7 @@ impl GoogleApi {
             self.client
                 .post("https://www.googleapis.com/calendar/v3/calendars")
                 .bearer_auth(&self.token)
-                .json(&json!({"summary": CALENDAR_NAME, "timeZone": DEFAULT_TIME_ZONE}))
+                .json(&json!({"summary": name, "timeZone": DEFAULT_TIME_ZONE}))
                 .send()
                 .map_err(api_network_error)?,
         )?;
@@ -634,6 +754,20 @@ impl GoogleApi {
             id: calendar.id,
             url: "https://calendar.google.com/calendar/u/0/r".to_string(),
         })
+    }
+
+    fn rename_calendar(&self, id: &str, name: &str) -> Result<(), String> {
+        let _: CalendarItem = self.json(
+            self.client
+                .patch(format!(
+                    "https://www.googleapis.com/calendar/v3/calendars/{id}"
+                ))
+                .bearer_auth(&self.token)
+                .json(&json!({"summary": name}))
+                .send()
+                .map_err(api_network_error)?,
+        )?;
+        Ok(())
     }
 
     fn ensure_event(
@@ -956,6 +1090,37 @@ mod tests {
     fn missing_resources_trigger_creation_paths() {
         assert!(first_drive_file(Vec::new()).is_none());
         assert!(find_calendar(Vec::new(), CALENDAR_NAME).is_none());
+    }
+
+    #[test]
+    fn archive_names_use_defaults_and_preserve_custom_values() {
+        let defaults = effective_archive_names(&ArchiveSettings::default());
+        assert_eq!(defaults.spreadsheet_name, SPREADSHEET_NAME);
+        assert_eq!(defaults.calendar_name, CALENDAR_NAME);
+
+        let custom = effective_archive_names(&ArchiveSettings {
+            spreadsheet_name: Some("Biên bản công ty".to_string()),
+            calendar_name: Some("Lịch họp nội bộ".to_string()),
+            ..ArchiveSettings::default()
+        });
+        assert_eq!(custom.spreadsheet_name, "Biên bản công ty");
+        assert_eq!(custom.calendar_name, "Lịch họp nội bộ");
+    }
+
+    #[test]
+    fn archive_names_are_trimmed_and_required() {
+        let names = validate_archive_names(ArchiveNamingSettings {
+            spreadsheet_name: "  Báo cáo họp  ".to_string(),
+            calendar_name: "  Lịch nhóm  ".to_string(),
+        })
+        .unwrap();
+        assert_eq!(names.spreadsheet_name, "Báo cáo họp");
+        assert_eq!(names.calendar_name, "Lịch nhóm");
+        assert!(validate_archive_names(ArchiveNamingSettings {
+            spreadsheet_name: " ".to_string(),
+            calendar_name: "Lịch nhóm".to_string(),
+        })
+        .is_err());
     }
 
     #[test]

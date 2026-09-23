@@ -9,6 +9,7 @@ export interface RecentMeeting {
   id: string;
   title: string;
   status: RecentMeetingStatus;
+  summaryStatus?: "pending" | "completed" | "failed";
 }
 
 export interface AiSummaryConfigStatus {
@@ -67,4 +68,43 @@ export interface EngineConfig {
   task: "transcribe" | "translate";
   vad_filter: boolean;
   word_timestamps: boolean;
+}
+
+export interface HardwareStatus {
+  cpu: {
+    compute_types: string[];
+    error: string | null;
+  };
+  cuda: {
+    available: boolean;
+    device_count: number;
+    compute_types: string[];
+    error: string | null;
+  };
+}
+
+export interface GpuRuntimeStatus {
+  installed: boolean;
+  installing: boolean;
+  cancel_requested: boolean;
+  removing: boolean;
+  progress: number;
+  version: string;
+  size_bytes: number;
+  estimated_download_bytes: number;
+  error: string | null;
+}
+
+export interface ModelStatus {
+  id: string;
+  label: string;
+  description: string;
+  downloaded: boolean;
+  downloading: boolean;
+  cancel_requested: boolean;
+  removing: boolean;
+  size_bytes: number;
+  total_bytes: number | null;
+  error: string | null;
+  error_operation: "download" | "remove" | null;
 }

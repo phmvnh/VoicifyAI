@@ -1,297 +1,232 @@
-[![CI](https://github.com/SYSTRAN/faster-whisper/workflows/CI/badge.svg)](https://github.com/SYSTRAN/faster-whisper/actions?query=workflow%3ACI) [![PyPI version](https://badge.fury.io/py/faster-whisper.svg)](https://badge.fury.io/py/faster-whisper)
+# VoicifyAI
 
-# Faster Whisper transcription with CTranslate2
+VoicifyAI là ứng dụng desktop hỗ trợ ghi âm, chuyển giọng nói thành văn bản và tóm tắt nội dung cuộc họp bằng AI. Ứng dụng chạy cục bộ với React, Tauri, FastAPI và `faster-whisper`.
 
-**faster-whisper** is a reimplementation of OpenAI's Whisper model using [CTranslate2](https://github.com/OpenNMT/CTranslate2/), which is a fast inference engine for Transformer models.
+## Tính năng
 
-This implementation is up to 4 times faster than [openai/whisper](https://github.com/openai/whisper) for the same accuracy while using less memory. The efficiency can be further improved with 8-bit quantization on both CPU and GPU.
+- Chuyển âm thanh thành văn bản bằng Whisper trên CPU hoặc NVIDIA GPU.
+- Thu trực tiếp từ microphone và âm thanh hệ thống.
+- Mở tệp âm thanh để phiên âm theo lô.
+- Tải, chọn và gỡ các model Whisper ngay trong ứng dụng.
+- Tạo bản tóm tắt bằng Gemini, Grok, OpenAI hoặc Anthropic.
+- Lưu lịch sử transcript trên thiết bị.
+- Đăng nhập Google và lưu kết quả vào Drive, Sheets và Calendar.
+- Giao diện sáng, tối hoặc theo cài đặt hệ thống.
 
-## Benchmark
+> [!NOTE]
+> Phiên bản hiện tại được phát triển và kiểm thử chủ yếu trên Windows. Tính năng thu âm thanh hệ thống sử dụng WASAPI nên chỉ hoạt động trên Windows.
 
-### Whisper
+## Kiến trúc
 
-For reference, here's the time and memory usage that are required to transcribe [**13 minutes**](https://www.youtube.com/watch?v=0u7tTptBo9I) of audio using different implementations:
+| Thành phần | Công nghệ | Vai trò |
+| --- | --- | --- |
+| Giao diện | React, TypeScript, Vite | Hiển thị và điều khiển ứng dụng |
+| Desktop | Tauri 2, Rust | Thu âm, lưu dữ liệu và tích hợp hệ điều hành |
+| API cục bộ | FastAPI | Cung cấp REST API và WebSocket cho phiên âm |
+| Nhận diện giọng nói | faster-whisper, CTranslate2 | Chạy model Whisper trên CPU/GPU |
 
-* [openai/whisper](https://github.com/openai/whisper)@[v20240930](https://github.com/openai/whisper/tree/v20240930)
-* [whisper.cpp](https://github.com/ggerganov/whisper.cpp)@[v1.7.2](https://github.com/ggerganov/whisper.cpp/tree/v1.7.2)
-* [transformers](https://github.com/huggingface/transformers)@[v4.46.3](https://github.com/huggingface/transformers/tree/v4.46.3)
-* [faster-whisper](https://github.com/SYSTRAN/faster-whisper)@[v1.1.0](https://github.com/SYSTRAN/faster-whisper/tree/v1.1.0)
+Khi chạy ở chế độ phát triển, ứng dụng sử dụng hai địa chỉ cục bộ:
 
-### Large-v2 model on GPU
+- Vite: `http://127.0.0.1:1420`
+- FastAPI: `http://127.0.0.1:8765`
 
-| Implementation | Precision | Beam size | Time | VRAM Usage |
-| --- | --- | --- | --- | --- |
-| openai/whisper | fp16 | 5 | 2m23s | 4708MB |
-| whisper.cpp (Flash Attention) | fp16 | 5 | 1m05s | 4127MB |
-| transformers (SDPA)[^1] | fp16 | 5 | 1m52s | 4960MB |
-| faster-whisper | fp16 | 5 | 1m03s | 4525MB |
-| faster-whisper (`batch_size=8`) | fp16 | 5 | 17s | 6090MB |
-| faster-whisper | int8 | 5 | 59s | 2926MB |
-| faster-whisper (`batch_size=8`) | int8 | 5 | 16s | 4500MB |
+## Yêu cầu hệ thống
 
-### distil-whisper-large-v3 model on GPU
+Trước khi cài đặt, hãy chuẩn bị:
 
-| Implementation | Precision | Beam size | Time | YT Commons WER |
-| --- | --- | --- | --- | --- |
-| transformers (SDPA) (`batch_size=16`) | fp16 | 5 | 46m12s | 14.801 |
-| faster-whisper (`batch_size=16`) | fp16 | 5 | 25m50s | 13.527 |
+- Windows 10 hoặc Windows 11.
+- [Python](https://www.python.org/downloads/) 3.9 trở lên.
+- [Node.js](https://nodejs.org/) 20 trở lên và npm.
+- [Rust](https://www.rust-lang.org/tools/install) stable cùng Cargo.
+- Microsoft C++ Build Tools với workload **Desktop development with C++**.
+- Microsoft Edge WebView2 Runtime. Thành phần này thường đã có trên Windows 10/11.
+- Kết nối Internet trong lần đầu tải dependency và model Whisper.
 
-*GPU Benchmarks are Executed with CUDA 12.4 on a NVIDIA RTX 3070 Ti 8GB.*
-[^1]: transformers OOM for any batch size > 1
+GPU không bắt buộc. Ứng dụng có thể chạy bằng CPU với `compute type` là `int8`. Nếu dùng NVIDIA GPU, môi trường cần tương thích với CUDA 12 và cuDNN 9; ứng dụng cũng có chức năng quản lý runtime GPU cục bộ.
 
-### Small model on CPU
+## Cài đặt
 
-| Implementation | Precision | Beam size | Time | RAM Usage |
-| --- | --- | --- | --- | --- |
-| openai/whisper | fp32 | 5 | 6m58s | 2335MB |
-| whisper.cpp | fp32 | 5 | 2m05s | 1049MB |
-| whisper.cpp (OpenVINO) | fp32 | 5 | 1m45s | 1642MB |
-| faster-whisper | fp32 | 5 | 2m37s | 2257MB |
-| faster-whisper (`batch_size=8`) | fp32 | 5 | 1m06s | 4230MB |
-| faster-whisper | int8 | 5 | 1m42s | 1477MB |
-| faster-whisper (`batch_size=8`) | int8 | 5 | 51s | 3608MB |
+### 1. Tải mã nguồn
 
-*Executed with 8 threads on an Intel Core i7-12700K.*
-
-
-## Requirements
-
-* Python 3.9 or greater
-
-Unlike openai-whisper, FFmpeg does **not** need to be installed on the system. The audio is decoded with the Python library [PyAV](https://github.com/PyAV-Org/PyAV) which bundles the FFmpeg libraries in its package.
-
-### GPU
-
-GPU execution requires the following NVIDIA libraries to be installed:
-
-* [cuBLAS for CUDA 12](https://developer.nvidia.com/cublas)
-* [cuDNN 9 for CUDA 12](https://developer.nvidia.com/cudnn)
-
-**Note**: The latest versions of `ctranslate2` only support CUDA 12 and cuDNN 9. For CUDA 11 and cuDNN 8, the current workaround is downgrading to the `3.24.0` version of `ctranslate2`, for CUDA 12 and cuDNN 8, downgrade to the `4.4.0` version of `ctranslate2`, (This can be done with `pip install --force-reinstall ctranslate2==4.4.0` or specifying the version in a `requirements.txt`).
-
-There are multiple ways to install the NVIDIA libraries mentioned above. The recommended way is described in the official NVIDIA documentation, but we also suggest other installation methods below. 
-
-<details>
-<summary>Other installation methods (click to expand)</summary>
-
-
-**Note:** For all these methods below, keep in mind the above note regarding CUDA versions. Depending on your setup, you may need to install the _CUDA 11_ versions of libraries that correspond to the CUDA 12 libraries listed in the instructions below.
-
-#### Use Docker
-
-The libraries (cuBLAS, cuDNN) are installed in this official NVIDIA CUDA Docker images: `nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04`.
-
-#### Install with `pip` (Linux only)
-
-On Linux these libraries can be installed with `pip`. Note that `LD_LIBRARY_PATH` must be set before launching Python.
-
-```bash
-pip install nvidia-cublas-cu12 nvidia-cudnn-cu12==9.*
-
-export LD_LIBRARY_PATH=`python3 -c 'import os; import nvidia.cublas.lib; import nvidia.cudnn.lib; print(os.path.dirname(nvidia.cublas.lib.__file__) + ":" + os.path.dirname(nvidia.cudnn.lib.__file__))'`
+```powershell
+git clone https://github.com/phmvnh/VoicifyAI.git
+cd VoicifyAI
 ```
 
-#### Download the libraries from Purfview's repository (Windows & Linux)
+### 2. Tạo môi trường Python
 
-Purfview's [whisper-standalone-win](https://github.com/Purfview/whisper-standalone-win) provides the required NVIDIA libraries for Windows & Linux in a [single archive](https://github.com/Purfview/whisper-standalone-win/releases/tag/libs). Decompress the archive and place the libraries in a directory included in the `PATH`.
-
-</details>
-
-## Installation
-
-The module can be installed from [PyPI](https://pypi.org/project/faster-whisper/):
-
-```bash
-pip install faster-whisper
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt -r api/requirements.txt
 ```
 
-<details>
-<summary>Other installation methods (click to expand)</summary>
+Nếu PowerShell chặn script kích hoạt môi trường ảo, chạy lệnh sau trong phiên terminal hiện tại rồi thử lại:
 
-### Install the master branch
-
-```bash
-pip install --force-reinstall "faster-whisper @ https://github.com/SYSTRAN/faster-whisper/archive/refs/heads/master.tar.gz"
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-### Install a specific commit
+### 3. Cài dependency frontend và Tauri
 
-```bash
-pip install --force-reinstall "faster-whisper @ https://github.com/SYSTRAN/faster-whisper/archive/a4f1cc8f11433e454c3934442b5e1a4ed5e865c3.tar.gz"
+```powershell
+npm install
 ```
 
-</details>
+### 4. Tạo cấu hình cục bộ
 
-## Usage
-
-### Faster-whisper
-
-```python
-from faster_whisper import WhisperModel
-
-model_size = "large-v3"
-
-# Run on GPU with FP16
-model = WhisperModel(model_size, device="cuda", compute_type="float16")
-
-# or run on GPU with INT8
-# model = WhisperModel(model_size, device="cuda", compute_type="int8_float16")
-# or run on CPU with INT8
-# model = WhisperModel(model_size, device="cpu", compute_type="int8")
-
-segments, info = model.transcribe("audio.mp3", beam_size=5)
-
-print("Detected language '%s' with probability %f" % (info.language, info.language_probability))
-
-for segment in segments:
-    print("[%.2fs -> %.2fs] %s" % (segment.start, segment.end, segment.text))
+```powershell
+Copy-Item .env.example .env
 ```
 
-**Warning:** `segments` is a *generator* so the transcription only starts when you iterate over it. The transcription can be run to completion by gathering the segments in a list or a `for` loop:
+Google OAuth là tùy chọn. Nếu chưa cần đăng nhập Google, có thể giữ nguyên các giá trị mẫu trong `.env`. Không commit file `.env` hoặc credential thật lên GitHub.
 
-```python
-segments, _ = model.transcribe("audio.mp3")
-segments = list(segments)  # The transcription will actually run here.
+## Chạy ứng dụng
+
+Kích hoạt môi trường Python nếu terminal hiện tại chưa kích hoạt:
+
+```powershell
+.\venv\Scripts\Activate.ps1
 ```
 
-### Batched Transcription
-The following code snippet illustrates how to run batched transcription on an example audio file. `BatchedInferencePipeline.transcribe` is a drop-in replacement for `WhisperModel.transcribe`
+Sau đó chạy:
 
-```python
-from faster_whisper import WhisperModel, BatchedInferencePipeline
-
-model = WhisperModel("turbo", device="cuda", compute_type="float16")
-batched_model = BatchedInferencePipeline(model=model)
-segments, info = batched_model.transcribe("audio.mp3", batch_size=16)
-
-for segment in segments:
-    print("[%.2fs -> %.2fs] %s" % (segment.start, segment.end, segment.text))
+```powershell
+npm run tauri dev
 ```
 
-### Faster Distil-Whisper
+Lệnh này mở ứng dụng Tauri và tự khởi động Vite cùng FastAPI. Không cần chạy ba tiến trình riêng.
 
-The Distil-Whisper checkpoints are compatible with the Faster-Whisper package. In particular, the latest [distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3)
-checkpoint is intrinsically designed to work with the Faster-Whisper transcription algorithm. The following code snippet 
-demonstrates how to run inference with distil-large-v3 on a specified audio file:
+Trong lần sử dụng đầu tiên:
 
-```python
-from faster_whisper import WhisperModel
+1. Mở danh sách model trong ứng dụng.
+2. Tải một model, chẳng hạn `tiny`, `base` hoặc `turbo`.
+3. Chọn CPU và `int8` nếu máy không có NVIDIA GPU.
+4. Chọn microphone hoặc âm thanh hệ thống rồi bắt đầu ghi; cũng có thể mở một tệp âm thanh.
 
-model_size = "distil-large-v3"
+Model được tải từ Hugging Face và lưu trong cache trên máy. Thời gian tải phụ thuộc vào kích thước model và tốc độ mạng.
 
-model = WhisperModel(model_size, device="cuda", compute_type="float16")
-segments, info = model.transcribe("audio.mp3", beam_size=5, language="en", condition_on_previous_text=False)
+## Chạy riêng từng thành phần
 
-for segment in segments:
-    print("[%.2fs -> %.2fs] %s" % (segment.start, segment.end, segment.text))
+Chạy FastAPI:
+
+```powershell
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8765
 ```
 
-For more information about the distil-large-v3 model, refer to the original [model card](https://huggingface.co/distil-whisper/distil-large-v3).
+Swagger UI sẽ có tại `http://127.0.0.1:8765/docs`. Xem thêm ví dụ gọi API trong [api/README.md](api/README.md).
 
-### Word-level timestamps
+Chạy riêng giao diện web:
 
-```python
-segments, _ = model.transcribe("audio.mp3", word_timestamps=True)
-
-for segment in segments:
-    for word in segment.words:
-        print("[%.2fs -> %.2fs] %s" % (word.start, word.end, word.word))
+```powershell
+npm run dev
 ```
 
-### VAD filter
+Giao diện web có thể hiển thị độc lập, nhưng các chức năng dùng Tauri như thu âm, keyring và tích hợp Google cần được chạy qua `npm run tauri dev`.
 
-The library integrates the [Silero VAD](https://github.com/snakers4/silero-vad) model to filter out parts of the audio without speech:
+## Google OAuth
 
-```python
-segments, _ = model.transcribe("audio.mp3", vad_filter=True)
+Để bật đăng nhập Google:
+
+1. Tạo OAuth Client trong Google Cloud với loại ứng dụng **Desktop app**.
+2. Bật các API Google Drive, Google Sheets và Google Calendar.
+3. Khai báo các biến sau trong `.env`:
+
+```env
+GOOGLE_OAUTH_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=your-desktop-client-secret
 ```
 
-The default behavior is conservative and only removes silence longer than 2 seconds. See the available VAD parameters and default values in the [source code](https://github.com/SYSTRAN/faster-whisper/blob/master/faster_whisper/vad.py). They can be customized with the dictionary argument `vad_parameters`:
+Nếu OAuth consent screen đang ở chế độ Testing, hãy thêm tài khoản cần đăng nhập vào danh sách test users. Hướng dẫn chi tiết và danh sách scope nằm tại [docs/GOOGLE_OAUTH.md](docs/GOOGLE_OAUTH.md).
 
-```python
-segments, _ = model.transcribe(
-    "audio.mp3",
-    vad_filter=True,
-    vad_parameters=dict(min_silence_duration_ms=500),
-)
-```
-Vad filter is enabled by default for batched transcription.
+## Tóm tắt bằng AI
 
-### Logging
+API key dùng để tóm tắt không được đặt trong `.env`. Trong ứng dụng, mở phần cấu hình AI Summary, chọn nhà cung cấp và nhập API key. Key được lưu trong keyring của hệ điều hành và chỉ được dùng khi tạo bản tóm tắt.
 
-The library logging level can be configured like this:
+Các nhà cung cấp hiện được hỗ trợ:
 
-```python
-import logging
+- Google Gemini
+- xAI Grok
+- OpenAI
+- Anthropic
 
-logging.basicConfig()
-logging.getLogger("faster_whisper").setLevel(logging.DEBUG)
-```
+## Kiểm tra dự án
 
-### Going further
+Kiểm tra TypeScript và Rust:
 
-See more model and transcription options in the [`WhisperModel`](https://github.com/SYSTRAN/faster-whisper/blob/master/faster_whisper/transcribe.py) class implementation.
-
-## Community integrations
-
-Here is a non exhaustive list of open-source projects using faster-whisper. Feel free to add your project to the list!
-
-
-* [speaches](https://github.com/speaches-ai/speaches) is an OpenAI compatible server using `faster-whisper`. It's easily deployable with Docker, works with OpenAI SDKs/CLI, supports streaming, and live transcription.
-* [WhisperX](https://github.com/m-bain/whisperX) is an award-winning Python library that offers speaker diarization and accurate word-level timestamps using wav2vec2 alignment
-* [whisper-ctranslate2](https://github.com/Softcatala/whisper-ctranslate2) is a command line client based on faster-whisper and compatible with the original client from openai/whisper.
-* [whisper-diarize](https://github.com/MahmoudAshraf97/whisper-diarization) is a speaker diarization tool that is based on faster-whisper and NVIDIA NeMo.
-* [whisper-standalone-win](https://github.com/Purfview/whisper-standalone-win) Standalone CLI executables of faster-whisper for Windows, Linux & macOS. 
-* [asr-sd-pipeline](https://github.com/hedrergudene/asr-sd-pipeline) provides a scalable, modular, end to end multi-speaker speech to text solution implemented using AzureML pipelines.
-* [Open-Lyrics](https://github.com/zh-plus/Open-Lyrics) is a Python library that transcribes voice files using faster-whisper, and translates/polishes the resulting text into `.lrc` files in the desired language using OpenAI-GPT.
-* [wscribe](https://github.com/geekodour/wscribe) is a flexible transcript generation tool supporting faster-whisper, it can export word level transcript and the exported transcript then can be edited with [wscribe-editor](https://github.com/geekodour/wscribe-editor)
-* [aTrain](https://github.com/BANDAS-Center/aTrain) is a graphical user interface implementation of faster-whisper developed at the BANDAS-Center at the University of Graz for transcription and diarization in Windows ([Windows Store App](https://apps.microsoft.com/detail/atrain/9N15Q44SZNS2)) and Linux.
-* [Whisper-Streaming](https://github.com/ufal/whisper_streaming) implements real-time mode for offline Whisper-like speech-to-text models with faster-whisper as the most recommended back-end. It implements a streaming policy with self-adaptive latency based on the actual source complexity, and demonstrates the state of the art.
-* [WhisperLive](https://github.com/collabora/WhisperLive) is a nearly-live implementation of OpenAI's Whisper which uses faster-whisper as the backend to transcribe audio in real-time.
-* [Faster-Whisper-Transcriber](https://github.com/BBC-Esq/ctranslate2-faster-whisper-transcriber) is a simple but reliable voice transcriber that provides a user-friendly interface.
-* [Open-dubbing](https://github.com/softcatala/open-dubbing) is open dubbing is an AI dubbing system which uses machine learning models to automatically translate and synchronize audio dialogue into different languages.
-* [Whisper-FastAPI](https://github.com/heimoshuiyu/whisper-fastapi) whisper-fastapi is a very simple script that provides an API backend compatible with OpenAI, HomeAssistant, and Konele (Android voice typing) formats.
-
-## Model conversion
-
-When loading a model from its size such as `WhisperModel("large-v3")`, the corresponding CTranslate2 model is automatically downloaded from the [Hugging Face Hub](https://huggingface.co/Systran).
-
-We also provide a script to convert any Whisper models compatible with the Transformers library. They could be the original OpenAI models or user fine-tuned models.
-
-For example the command below converts the [original "large-v3" Whisper model](https://huggingface.co/openai/whisper-large-v3) and saves the weights in FP16:
-
-```bash
-pip install transformers[torch]>=4.23
-
-ct2-transformers-converter --model openai/whisper-large-v3 --output_dir whisper-large-v3-ct2
---copy_files tokenizer.json preprocessor_config.json --quantization float16
+```powershell
+npm run check
 ```
 
-* The option `--model` accepts a model name on the Hub or a path to a model directory.
-* If the option `--copy_files tokenizer.json` is not used, the tokenizer configuration is automatically downloaded when the model is loaded later.
+Kiểm tra bản build frontend:
 
-Models can also be converted from the code. See the [conversion API](https://opennmt.net/CTranslate2/python/ctranslate2.converters.TransformersConverter.html).
-
-### Load a converted model
-
-1. Directly load the model from a local directory:
-```python
-model = faster_whisper.WhisperModel("whisper-large-v3-ct2")
+```powershell
+npm run build
 ```
 
-2. [Upload your model to the Hugging Face Hub](https://huggingface.co/docs/transformers/model_sharing#upload-with-the-web-interface) and load it from its name:
-```python
-model = faster_whisper.WhisperModel("username/whisper-large-v3-ct2")
+Để chạy test Python và Rust, cài thêm dependency phát triển rồi chạy:
+
+```powershell
+python -m pip install -e ".[dev]" -r api/requirements.txt
+npm test
 ```
 
-## Comparing performance against other implementations
+## Đóng gói ứng dụng
 
-If you are comparing the performance against other Whisper implementations, you should make sure to run the comparison with similar settings. In particular:
-
-* Verify that the same transcription options are used, especially the same beam size. For example in openai/whisper, `model.transcribe` uses a default beam size of 1 but here we use a default beam size of 5.
-* Transcription speed is closely affected by the number of words in the transcript, so ensure that other implementations have a similar WER (Word Error Rate) to this one.
-* When running on CPU, make sure to set the same number of threads. Many frameworks will read the environment variable `OMP_NUM_THREADS`, which can be set when running your script:
-
-```bash
-OMP_NUM_THREADS=4 python3 my_script.py
+```powershell
+npm run tauri build
 ```
+
+Artifact Tauri được tạo trong `src-tauri/target/release/bundle`.
+
+> [!WARNING]
+> Quy trình build hiện tại chưa đóng gói Python, FastAPI và model Whisper vào installer. Bản build Tauri vẫn cần API cục bộ chạy tại `127.0.0.1:8765`. Hãy xử lý việc sidecar/đóng gói backend trước khi phát hành installer cho người dùng cuối.
+
+## Biến môi trường frontend
+
+Các giá trị sau là tùy chọn; mặc định phù hợp khi chạy toàn bộ dự án trên cùng máy:
+
+```env
+VITE_API_BASE_URL=http://127.0.0.1:8765
+VITE_STREAM_URL=ws://127.0.0.1:8765/v1/transcribe/stream
+```
+
+## Xử lý lỗi thường gặp
+
+### Không tìm thấy `cargo`
+
+Cài Rust bằng `rustup`, mở terminal mới rồi kiểm tra:
+
+```powershell
+rustc --version
+cargo --version
+```
+
+### FastAPI không khởi động
+
+Đảm bảo môi trường ảo đang được kích hoạt và kiểm tra dependency:
+
+```powershell
+python -m pip install -r requirements.txt -r api/requirements.txt
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8765
+```
+
+### Không thể dùng GPU
+
+Chuyển thiết bị sang CPU và chọn `int8` để xác nhận ứng dụng hoạt động trước. Sau đó kiểm tra driver NVIDIA, CUDA/cuDNN hoặc cài runtime GPU từ giao diện ứng dụng.
+
+### Không có âm thanh hệ thống
+
+WASAPI loopback chỉ nhận dữ liệu khi Windows đang phát âm thanh. Hãy phát thử một video hoặc tệp âm thanh và kiểm tra đúng thiết bị output mặc định.
+
+## Bảo mật
+
+- `.env`, API key và OAuth token không được commit lên Git.
+- OAuth token và API key AI được lưu bằng keyring của hệ điều hành.
+- Không ghi credential hoặc transcript nhạy cảm vào log khi báo lỗi.
+- Ứng dụng gửi transcript tới nhà cung cấp AI chỉ khi người dùng yêu cầu tạo tóm tắt.
+
+## Nguồn mở
+
+Phần nhận diện giọng nói của dự án dựa trên [faster-whisper](https://github.com/SYSTRAN/faster-whisper) và [CTranslate2](https://github.com/OpenNMT/CTranslate2). Xem [LICENSE](LICENSE) để biết thông tin giấy phép.

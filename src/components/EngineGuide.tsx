@@ -13,7 +13,9 @@ export function EngineGuide() {
           <span className="guide-icon"><Sparkles size={16} /></span>
           <div>
             <h4>Model</h4>
-            <p><strong>tiny / base:</strong> nhanh, nhẹ. <strong>small / medium:</strong> cân bằng. <strong>large-v3 / turbo:</strong> chính xác hơn nhưng cần máy mạnh.</p>
+            <p><strong>tiny / base:</strong> nhanh, nhẹ. </p>
+            <p><strong>small / medium:</strong> cân bằng. </p>
+            <p><strong>large-v3 / turbo:</strong> chính xác hơn nhưng cần máy mạnh.</p>
           </div>
         </article>
         <article>
@@ -27,7 +29,9 @@ export function EngineGuide() {
           <span className="guide-icon"><HardDrive size={16} /></span>
           <div>
             <h4>Định dạng</h4>
-            <p><strong>int8</strong> nhẹ, phù hợp CPU. <strong>float16</strong> phù hợp GPU. Chọn <strong>default</strong> để hệ thống tự quyết định.</p>
+            <p><strong>int8</strong> nhẹ, phù hợp CPU. </p>
+            <p><strong>float16</strong> phù hợp GPU. </p>
+            <p></p><p>Chọn <strong>default</strong> để hệ thống tự xử lí.</p>
           </div>
         </article>
         <article>
@@ -41,11 +45,11 @@ export function EngineGuide() {
 
       <div className="engine-recommendation">
         <strong>Gợi ý nhanh</strong>
-        <span>Máy phổ thông: <b>tiny/base · CPU · int8</b></span>
+        <span>Máy phổ thông: <b>tiny/base/medium · CPU · int8</b></span>
         <span>GPU NVIDIA: <b>turbo · CUDA · float16</b></span>
       </div>
 
-      <p className="permission-note">Model được tải về ở lần sử dụng đầu tiên; model lớn sẽ cần thêm thời gian và dung lượng.</p>
+      <p className="permission-note">Đọc kỹ hướng dẫn trước khi sử dụng.</p>
     </section>
   );
 }

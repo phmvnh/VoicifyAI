@@ -9,6 +9,7 @@ venv/
 
 # Unit Test
 .pytest_cache/
+/.test-tmp-cuda/
 
 # Ignore IDE, Editor Files
 .idea/
@@ -17,9 +18,18 @@ venv/
 # Desktop frontend / Tauri build output
 node_modules/
 dist/
+/build/
 src-tauri/target/
+/src-tauri/binaries/
+/src-tauri/2
 .cargo-target-check/
+
+# Project-local NVIDIA runtime (downloaded binary dependencies)
+/runtime/cuda12/
+/runtime/cuda12.backup/
+/runtime/*.log
 
 # Local frontend configuration and secrets
 .env
-.env.local
+.env.*
+!.env.example

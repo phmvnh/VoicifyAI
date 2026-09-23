@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { Inspector } from "./components/Inspector";
 import { MainPanel } from "./components/MainPanel";
+import { RemovalConfirmModal } from "./components/RemovalConfirmModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
 import { SummaryApiModal } from "./components/SummaryApiModal";
 import { TitleBar } from "./components/TitleBar";
 import { clearAiSummaryConfig, DEFAULT_AI_CONFIG, generateAiSummary, getAiSummaryStatus, saveAiSummaryConfig } from "./lib/aiSummary";
-import { fetchLanguages, fetchModels, transcribeFile } from "./lib/engineClient";
+import { cancelGpuRuntimeInstall, cancelModelDownload, downloadModel, fetchGpuRuntimeStatus, fetchHardwareStatus, fetchLanguages, fetchModels, fetchModelStatuses, installGpuRuntime, removeGpuRuntime, removeModel, transcribeFile } from "./lib/engineClient";
 import { buildLanguageOptions, type LanguageOption } from "./lib/languages";
 import { archiveMeeting, openArchiveUrl, prepareArchiveDestinations, type ArchiveDestinationsOutput, type ArchiveMeetingOutput } from "./lib/meetingArchive";
+import { getMeetingTranscript, saveMeetingSummary, saveMeetingTranscript, type StoredMeeting } from "./lib/meetingHistory";
 import { cancelGoogleSignIn, getGoogleAuthStatus, signInWithGoogle, signOutGoogle, type GoogleAuthStatus } from "./lib/googleAuth";
 import {
   listenToLiveEvents,
@@ -18,9 +20,9 @@ import {
   stopLiveCapture,
 } from "./lib/liveAudioClient";
 import type { AudioDeviceInfo } from "./lib/liveAudioClient";
-import type { AiSummaryConfigStatus, CaptureSource, EngineConfig, MainTab, RecentMeeting, SaveAiSummaryConfigInput, ThemeMode, TranscriptionResult } from "./types";
+import type { AiSummaryConfigStatus, CaptureSource, EngineConfig, GpuRuntimeStatus, HardwareStatus, MainTab, ModelStatus, RecentMeeting, SaveAiSummaryConfigInput, ThemeMode, TranscriptionResult } from "./types";
 
-const fallbackModels = ["tiny", "tiny.en", "base", "small", "medium", "large-v3", "distil-large-v3", "turbo"];
+const visibleModels = ["tiny", "base", "small", "medium", "turbo", "large-v3"];
 const fallbackLanguageCodes = ["vi", "en", "zh", "ja", "ko", "fr", "de", "es", "pt", "it", "ru", "th", "ar"];
 const meetingTimeZone = "Asia/Ho_Chi_Minh";
 
@@ -29,6 +31,10 @@ interface MeetingContext {
   startedAt: string;
   endedAt: string | null;
 }
+
+type PendingRemoval =
+  | { kind: "model"; id: string; name: string; size: string }
+  | { kind: "gpu"; name: string; size: string };
 
 function localMeetingParts(isoDate: string) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -59,13 +65,19 @@ export default function App() {
   const activeCaptureSources = useRef<CaptureSource[]>([]);
   const finishedTranscriptStreams = useRef(new Set<CaptureSource>());
   const meetingContext = useRef<MeetingContext | null>(null);
+  const pendingModelRemovals = useRef(new Set<string>());
   const [tab, setTab] = useState<MainTab>("transcript");
   const [sessionName, setSessionName] = useState("Phiên mới");
   const [result, setResult] = useState<TranscriptionResult | null>(null);
-  const [models, setModels] = useState(fallbackModels);
+  const [models, setModels] = useState(visibleModels);
   const [languages, setLanguages] = useState<LanguageOption[]>(
     buildLanguageOptions(fallbackLanguageCodes),
   );
+  const [hardwareStatus, setHardwareStatus] = useState<HardwareStatus | null>(null);
+  const [gpuRuntimeStatus, setGpuRuntimeStatus] = useState<GpuRuntimeStatus | null>(null);
+  const [modelStatuses, setModelStatuses] = useState<ModelStatus[]>([]);
+  const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
+  const [confirmingRemoval, setConfirmingRemoval] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sources, setSources] = useState<Record<CaptureSource, boolean>>({ mic: true, system: false });
@@ -111,17 +123,92 @@ export default function App() {
     setRecentMeetings((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item));
   };
 
+  const persistCurrentTranscript = async (transcription: TranscriptionResult, title = sessionName) => {
+    const context = meetingContext.current;
+    if (!context) throw new Error("Không có thông tin phiên để lưu transcript.");
+    const endedAt = context.endedAt ?? new Date().toISOString();
+    context.endedAt = endedAt;
+    const stored = await saveMeetingTranscript({
+      id: context.id,
+      title: title.trim() || "Phiên chưa đặt tên",
+      startedAt: context.startedAt,
+      endedAt,
+      transcript: transcription.text,
+      language: transcription.language,
+      duration: transcription.duration,
+      updatedAt: new Date().toISOString(),
+    });
+    upsertRecentMeeting({
+      id: stored.id,
+      title: stored.title,
+      status: "completed",
+      summaryStatus: stored.summaryStatus,
+    });
+    return stored;
+  };
+
+  const openStoredMeeting = (meeting: StoredMeeting) => {
+    const restoredResult: TranscriptionResult = {
+      text: meeting.transcript,
+      segments: meeting.transcript ? [{
+        id: 0,
+        start: 0,
+        end: meeting.duration,
+        text: meeting.transcript,
+        words: null,
+      }] : [],
+      language: meeting.language,
+      language_probability: 1,
+      duration: meeting.duration,
+      duration_after_vad: meeting.duration,
+      inference_seconds: 0,
+      rtf: 0,
+    };
+    meetingContext.current = {
+      id: meeting.id,
+      startedAt: meeting.startedAt,
+      endedAt: meeting.endedAt,
+    };
+    liveResult.current = restoredResult;
+    setResult(restoredResult);
+    setSessionName(meeting.title);
+    setSummaryText(meeting.summaryText);
+    setSummaryError(meeting.summaryError);
+    setArchiveLinks(null);
+    setArchiveError(null);
+    setElapsed(Math.max(0, Math.round(meeting.duration)));
+    setTab(meeting.summaryText || meeting.summaryStatus === "failed" ? "summary" : "transcript");
+  };
+
+  const handleSelectMeeting = async (meetingId: string) => {
+    setError(null);
+    try {
+      openStoredMeeting(await getMeetingTranscript(meetingId));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
   const handleSessionNameChange = (value: string) => {
     setSessionName(value);
     if (meetingContext.current) updateRecentMeeting(meetingContext.current.id, { title: value });
   };
 
   useEffect(() => {
-    fetchModels().then(setModels).catch(() => undefined);
+    fetchModels()
+      .then((availableModels) => {
+        const supportedModels = visibleModels.filter((model) => availableModels.includes(model));
+        if (supportedModels.length > 0) setModels(supportedModels);
+      })
+      .catch(() => undefined);
     fetchLanguages()
       .then((codes) => setLanguages(buildLanguageOptions(codes)))
       .catch(() => undefined);
-    getGoogleAuthStatus().then(setGoogleAuth).catch(() => undefined);
+    getGoogleAuthStatus()
+      .then((status) => {
+        setGoogleAuth(status);
+      })
+      .catch(() => undefined);
     const configRevision = aiSummaryConfigRevision.current;
     getAiSummaryStatus()
       .then((status) => {
@@ -131,6 +218,86 @@ export default function App() {
       })
       .catch((caught) => setSummaryError(caught instanceof Error ? caught.message : String(caught)));
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let refreshTimer: number | null = null;
+    const refresh = async () => {
+      let delay = 10_000;
+      try {
+        const statuses = await fetchModelStatuses();
+        if (disposed) return;
+        setModelStatuses(statuses);
+        if (statuses.some((status) => status.downloading || status.removing)) delay = 750;
+      } catch {
+        delay = 3_000;
+      } finally {
+        if (!disposed) refreshTimer = window.setTimeout(refresh, delay);
+      }
+    };
+    void refresh();
+    return () => {
+      disposed = true;
+      if (refreshTimer !== null) window.clearTimeout(refreshTimer);
+    };
+  }, []);
+
+  useEffect(() => {
+    for (const model of pendingModelRemovals.current) {
+      const status = modelStatuses.find((item) => item.id === model);
+      if (!status || status.removing || status.downloaded) continue;
+      pendingModelRemovals.current.delete(model);
+      if (config.model === model) {
+        const fallback = modelStatuses.find((item) => item.downloaded && !item.removing && item.id !== model);
+        if (fallback) setConfig((current) => ({ ...current, model: fallback.id }));
+      }
+    }
+  }, [modelStatuses, config.model]);
+
+  useEffect(() => {
+    let disposed = false;
+    let retryTimer: number | null = null;
+    const refreshHardware = async () => {
+      let retryDelay = 30_000;
+      const [hardwareResult, runtimeResult] = await Promise.allSettled([
+        fetchHardwareStatus(),
+        fetchGpuRuntimeStatus(),
+      ]);
+      if (!disposed) {
+        if (hardwareResult.status === "fulfilled") {
+          setHardwareStatus(hardwareResult.value);
+        } else {
+          const message = hardwareResult.reason instanceof Error ? hardwareResult.reason.message : String(hardwareResult.reason);
+          setHardwareStatus({
+            cpu: {
+              compute_types: [],
+              error: `Không thể kiểm tra CPU: ${message}. Đang thử lại…`,
+            },
+            cuda: {
+              available: false,
+              device_count: 0,
+              compute_types: [],
+              error: `Không thể kiểm tra CUDA: ${message}. Đang thử lại…`,
+            },
+          });
+        }
+        if (runtimeResult.status === "fulfilled") {
+          setGpuRuntimeStatus(runtimeResult.value);
+          retryDelay = runtimeResult.value.installing || runtimeResult.value.removing ? 1_000 : 15_000;
+        } else {
+          // Runtime management is optional. A stale/missing endpoint must not hide
+          // a GPU that /v1/hardware already detected correctly.
+          retryDelay = 5_000;
+        }
+        retryTimer = window.setTimeout(refreshHardware, retryDelay);
+      }
+    };
+    void refreshHardware();
+    return () => {
+      disposed = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [gpuRuntimeStatus?.installing, gpuRuntimeStatus?.removing]);
 
   const handleSaveAiSummary = async (input: SaveAiSummaryConfigInput) => {
     const saved = await saveAiSummaryConfig(input);
@@ -190,15 +357,55 @@ export default function App() {
     setSummaryError(null);
     let completedSummary: string | null = null;
     let completedTitle: string | null = null;
+    const context = meetingContext.current;
+    if (context) {
+      await saveMeetingSummary({
+        meetingId: context.id,
+        title: sessionName,
+        status: "pending",
+        text: null,
+        provider: aiSummaryConfig.provider,
+        model: aiSummaryConfig.model,
+        error: null,
+        updatedAt: new Date().toISOString(),
+      }).catch(() => undefined);
+      updateRecentMeeting(context.id, { summaryStatus: "pending" });
+    }
     try {
       const output = await generateAiSummary(transcript, "bullets", "");
       setSummaryText(output.text);
       setSessionName(output.title);
-      if (meetingContext.current) updateRecentMeeting(meetingContext.current.id, { title: output.title, status: "completed" });
+      if (context) {
+        await saveMeetingSummary({
+          meetingId: context.id,
+          title: output.title,
+          status: "completed",
+          text: output.text,
+          provider: output.provider,
+          model: output.model,
+          error: null,
+          updatedAt: new Date().toISOString(),
+        });
+        updateRecentMeeting(context.id, { title: output.title, status: "completed", summaryStatus: "completed" });
+      }
       completedSummary = output.text;
       completedTitle = output.title;
     } catch (caught) {
-      setSummaryError(caught instanceof Error ? caught.message : String(caught));
+      const message = caught instanceof Error ? caught.message : String(caught);
+      setSummaryError(message);
+      if (context) {
+        await saveMeetingSummary({
+          meetingId: context.id,
+          title: sessionName,
+          status: "failed",
+          text: null,
+          provider: aiSummaryConfig.provider,
+          model: aiSummaryConfig.model,
+          error: message,
+          updatedAt: new Date().toISOString(),
+        }).catch(() => undefined);
+        updateRecentMeeting(context.id, { summaryStatus: "failed" });
+      }
     } finally {
       setSummaryLoading(false);
     }
@@ -207,6 +414,12 @@ export default function App() {
 
   const handleGenerateSummary = async () => {
     if (!result) return;
+    try {
+      await persistCurrentTranscript(result);
+    } catch (caught) {
+      setSummaryError(caught instanceof Error ? caught.message : String(caught));
+      return;
+    }
     await generateSummaryForTranscript(result.text);
   };
 
@@ -387,6 +600,15 @@ export default function App() {
   }, [theme]);
 
   const handleFile = async (file: File) => {
+    if (config.device === "cuda" && !hardwareStatus?.cuda.available) {
+      setError("Hãy cài thành phần tăng tốc GPU trước khi nhận diện file.");
+      return;
+    }
+    const selectedStatus = modelStatuses.find((status) => status.id === config.model);
+    if (selectedStatus && !selectedStatus.downloaded) {
+      setError(selectedStatus.downloading ? "Model đang được tải. Hãy chờ tải xong rồi thử lại." : "Hãy tải model đã chọn trước khi nhận diện file.");
+      return;
+    }
     setLoading(true);
     setError(null);
     setSummaryText(null);
@@ -406,6 +628,11 @@ export default function App() {
         endedAt: endedAt.toISOString(),
       };
       upsertRecentMeeting({ id: meetingContext.current.id, title: fileTitle, status: "completed" });
+      try {
+        await persistCurrentTranscript(nextResult, fileTitle);
+      } catch (caught) {
+        setSummaryError(`Không thể lưu transcript: ${caught instanceof Error ? caught.message : String(caught)}`);
+      }
       setTab("transcript");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Không thể nhận diện file âm thanh");
@@ -417,6 +644,15 @@ export default function App() {
   };
 
   const handleStartCapture = async () => {
+    if (config.device === "cuda" && !hardwareStatus?.cuda.available) {
+      setError("Hãy cài thành phần tăng tốc GPU trước khi bắt đầu thu âm.");
+      return;
+    }
+    const selectedStatus = modelStatuses.find((status) => status.id === config.model);
+    if (selectedStatus && !selectedStatus.downloaded) {
+      setError(selectedStatus.downloading ? "Model đang được tải. Hãy chờ tải xong rồi bắt đầu." : "Hãy tải model đã chọn trước khi bắt đầu thu âm.");
+      return;
+    }
     const selected = (Object.entries(sources) as [CaptureSource, boolean][])
       .filter(([, enabled]) => enabled)
       .map(([source]) => source);
@@ -450,6 +686,106 @@ export default function App() {
       activeCaptureSources.current = [];
       meetingContext.current = null;
       setError(caught instanceof Error ? caught.message : "Không thể bắt đầu thu âm");
+    }
+  };
+
+  const handleDownloadModel = async (model: string) => {
+    setError(null);
+    try {
+      const status = await downloadModel(model);
+      setModelStatuses((current) => current.some((item) => item.id === status.id)
+        ? current.map((item) => item.id === status.id ? status : item)
+        : [...current, status]);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không thể bắt đầu tải model");
+    }
+  };
+
+  const handleCancelModelDownload = async (model: string) => {
+    setError(null);
+    try {
+      const status = await cancelModelDownload(model);
+      setModelStatuses((current) => current.map((item) => item.id === status.id ? status : item));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không thể huỷ tải model");
+    }
+  };
+
+  const handleRemoveModel = async (model: string) => {
+    const status = modelStatuses.find((item) => item.id === model);
+    if (!status) return;
+    if (config.model === model) {
+      setError("Không thể gỡ model đang được chọn. Hãy chọn model khác trước.");
+      return;
+    }
+    if (recording || loading) {
+      setError("Không thể gỡ model khi tác vụ nhận diện đang chạy.");
+      return;
+    }
+    const size = status.size_bytes >= 1024 ** 3
+      ? `${(status.size_bytes / 1024 ** 3).toFixed(2)} GB`
+      : `${Math.round(status.size_bytes / 1024 ** 2)} MB`;
+    setPendingRemoval({ kind: "model", id: model, name: status.label, size });
+  };
+
+  const confirmRemoveModel = async (model: string) => {
+    setError(null);
+    try {
+      pendingModelRemovals.current.add(model);
+      const nextStatus = await removeModel(model);
+      setModelStatuses((current) => current.map((item) => item.id === nextStatus.id ? nextStatus : item));
+      setPendingRemoval(null);
+    } catch (caught) {
+      pendingModelRemovals.current.delete(model);
+      setError(caught instanceof Error ? caught.message : "Không thể gỡ model");
+    }
+  };
+
+  const handleInstallGpuRuntime = async () => {
+    setError(null);
+    try {
+      setGpuRuntimeStatus(await installGpuRuntime());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không thể cài tăng tốc GPU");
+    }
+  };
+
+  const handleCancelGpuRuntimeInstall = async () => {
+    setError(null);
+    try {
+      setGpuRuntimeStatus(await cancelGpuRuntimeInstall());
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không thể huỷ cài tăng tốc GPU");
+    }
+  };
+
+  const handleRemoveGpuRuntime = async () => {
+    if (!gpuRuntimeStatus || recording || loading) return;
+    const size = gpuRuntimeStatus.size_bytes >= 1024 ** 3
+      ? `${(gpuRuntimeStatus.size_bytes / 1024 ** 3).toFixed(1)} GB`
+      : `${Math.max(1, Math.round(gpuRuntimeStatus.size_bytes / 1024 ** 2))} MB`;
+    setPendingRemoval({ kind: "gpu", name: "CUDA 12 + cuDNN", size });
+  };
+
+  const confirmRemoveGpuRuntime = async () => {
+    setError(null);
+    try {
+      if (config.device === "cuda") setConfig((current) => ({ ...current, device: "cpu", quantization: "int8" }));
+      setGpuRuntimeStatus(await removeGpuRuntime());
+      setPendingRemoval(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không thể gỡ tăng tốc GPU");
+    }
+  };
+
+  const confirmPendingRemoval = async () => {
+    if (!pendingRemoval || confirmingRemoval) return;
+    setConfirmingRemoval(true);
+    try {
+      if (pendingRemoval.kind === "model") await confirmRemoveModel(pendingRemoval.id);
+      else await confirmRemoveGpuRuntime();
+    } finally {
+      setConfirmingRemoval(false);
     }
   };
 
@@ -492,27 +828,20 @@ export default function App() {
       setSummaryLoading(false);
       return;
     }
+    try {
+      await persistCurrentTranscript(liveResult.current!);
+    } catch (caught) {
+      setSummaryError(`Không thể lưu transcript: ${caught instanceof Error ? caught.message : String(caught)}`);
+      setSummaryLoading(false);
+      return;
+    }
     if (!aiSummaryConfig.configured) {
       setSummaryError("Chưa cấu hình dịch vụ AI Summary.");
       setSummaryLoading(false);
       return;
     }
 
-    let completedSummary: string | null = null;
-    let completedTitle: string | null = null;
-    try {
-      const output = await generateAiSummary(transcript, "bullets", "");
-      setSummaryText(output.text);
-      setSessionName(output.title);
-      if (meetingContext.current) updateRecentMeeting(meetingContext.current.id, { title: output.title, status: "completed" });
-      completedSummary = output.text;
-      completedTitle = output.title;
-    } catch (caught) {
-      setSummaryError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setSummaryLoading(false);
-    }
-    if (completedSummary && completedTitle) await archiveCompletedSummary(completedSummary, completedTitle);
+    await generateSummaryForTranscript(transcript);
   };
 
   const handleOpenArchive = async (kind: "docs" | "sheet" | "calendar") => {
@@ -538,13 +867,22 @@ export default function App() {
     }
   };
 
+  const selectedModelReady = modelStatuses.find((status) => status.id === config.model)?.downloaded ?? true;
+  const selectedDeviceReady = config.device !== "cuda" || hardwareStatus?.cuda.available === true;
+  const inferenceReady = selectedModelReady && selectedDeviceReady;
+  const inferenceBlockedReason = !selectedModelReady
+    ? "Tải model đã chọn để bắt đầu."
+    : !selectedDeviceReady
+      ? "Cài thành phần tăng tốc GPU để bắt đầu."
+      : null;
+
   return (
     <div className="app-shell">
       <TitleBar />
       <div className="workspace">
-        <Sidebar sessionName={sessionName} setSessionName={handleSessionNameChange} onOpenSettings={() => setSettingsOpen(true)} hasResult={Boolean(result)} recentMeetings={recentMeetings} sources={sources} setSources={setSources} levels={levels} recording={recording} paused={paused} elapsed={elapsed} onStart={handleStartCapture} onPause={handlePauseCapture} onStop={handleStopCapture} error={error} microphones={microphones} microphoneDevice={microphoneDevice} onMicrophoneChange={setMicrophoneDevice} onRefreshMicrophones={refreshMicrophones} googleUser={googleAuth.user} archiveLinks={archiveLinks} archiveLoading={archiveLoading} archiveError={archiveError} onOpenArchive={handleOpenArchive} />
-        <MainPanel tab={tab} onTabChange={setTab} result={result} loading={loading} error={error} onFile={handleFile} sessionName={sessionName} model={config.model} device={config.device} quantization={config.quantization} sources={sources} levels={levels} recording={recording} paused={paused} elapsed={elapsed} onStart={handleStartCapture} onPause={handlePauseCapture} onStop={handleStopCapture} summaryText={summaryText} summaryLoading={summaryLoading} summaryError={summaryError} aiSummaryConfigured={aiSummaryConfig.configured} aiSummaryModel={aiSummaryConfig.model} onGenerateSummary={handleGenerateSummary} onOpenSummarySettings={() => setSummarySettingsOpen(true)} />
-        <Inspector config={config} setConfig={setConfig} models={models} languages={languages} result={result} recording={recording} onOpenSummarySettings={() => setSummarySettingsOpen(true)} aiSummaryConfig={aiSummaryConfig} />
+        <Sidebar sessionName={sessionName} setSessionName={handleSessionNameChange} onOpenSettings={() => setSettingsOpen(true)} hasResult={Boolean(result)} recentMeetings={recentMeetings} onSelectMeeting={handleSelectMeeting} sources={sources} setSources={setSources} levels={levels} recording={recording} paused={paused} elapsed={elapsed} onStart={handleStartCapture} onPause={handlePauseCapture} onStop={handleStopCapture} microphones={microphones} microphoneDevice={microphoneDevice} onMicrophoneChange={setMicrophoneDevice} onRefreshMicrophones={refreshMicrophones} googleUser={googleAuth.user} archiveLinks={archiveLinks} archiveLoading={archiveLoading} onOpenArchive={handleOpenArchive} modelReady={inferenceReady} blockedReason={inferenceBlockedReason} />
+        <MainPanel tab={tab} onTabChange={setTab} result={result} loading={loading} error={error ?? archiveError} onFile={handleFile} sessionName={sessionName} model={config.model} device={config.device} quantization={config.quantization} sources={sources} levels={levels} recording={recording} paused={paused} elapsed={elapsed} onStart={handleStartCapture} onPause={handlePauseCapture} onStop={handleStopCapture} summaryText={summaryText} summaryLoading={summaryLoading} summaryError={summaryError} aiSummaryConfigured={aiSummaryConfig.configured} aiSummaryModel={aiSummaryConfig.model} onGenerateSummary={handleGenerateSummary} onOpenSummarySettings={() => setSummarySettingsOpen(true)} modelReady={inferenceReady} blockedReason={inferenceBlockedReason} />
+        <Inspector config={config} setConfig={setConfig} models={models} languages={languages} result={result} recording={recording} engineBusy={recording || loading} onOpenSummarySettings={() => setSummarySettingsOpen(true)} aiSummaryConfig={aiSummaryConfig} hardwareStatus={hardwareStatus} gpuRuntimeStatus={gpuRuntimeStatus} modelStatuses={modelStatuses} onDownloadModel={handleDownloadModel} onCancelModelDownload={handleCancelModelDownload} onRemoveModel={handleRemoveModel} onInstallGpuRuntime={handleInstallGpuRuntime} onCancelGpuRuntimeInstall={handleCancelGpuRuntimeInstall} onRemoveGpuRuntime={handleRemoveGpuRuntime} />
       </div>
       {settingsOpen && (
         <SettingsModal
@@ -559,6 +897,19 @@ export default function App() {
         />
       )}
       {summarySettingsOpen && <SummaryApiModal status={aiSummaryConfig} onClose={() => setSummarySettingsOpen(false)} onSave={handleSaveAiSummary} onClear={handleClearAiSummary} />}
+      {pendingRemoval && (
+        <RemovalConfirmModal
+          title={pendingRemoval.kind === "model" ? "Gỡ model khỏi thiết bị?" : "Gỡ tăng tốc GPU?"}
+          itemName={pendingRemoval.name}
+          size={pendingRemoval.size}
+          description={pendingRemoval.kind === "model"
+            ? "Model sẽ bị xoá khỏi máy và không thể sử dụng cho đến khi được tải lại."
+            : "Chỉ runtime do VoicifyAI tải sẽ bị xoá. NVIDIA Driver và CUDA của ứng dụng khác không bị ảnh hưởng."}
+          busy={confirmingRemoval}
+          onClose={() => !confirmingRemoval && setPendingRemoval(null)}
+          onConfirm={confirmPendingRemoval}
+        />
+      )}
     </div>
   );
 }

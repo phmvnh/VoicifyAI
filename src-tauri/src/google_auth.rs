@@ -158,6 +158,10 @@ pub(crate) fn google_user_id() -> Result<String, String> {
         .ok_or("Bạn chưa đăng nhập Google. Hãy đăng nhập trong Cài đặt để lưu meeting.".to_string())
 }
 
+pub(crate) fn current_google_user_id() -> Option<String> {
+    load_auth().map(|auth| auth.user.id)
+}
+
 #[derive(Deserialize)]
 struct UserInfo {
     sub: String,

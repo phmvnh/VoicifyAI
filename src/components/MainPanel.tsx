@@ -1,5 +1,5 @@
 import { CircleStop, FileAudio, LoaderCircle, Mic2, MonitorSpeaker, Pause, Play, RotateCcw, Settings2, Sparkles, Upload } from "lucide-react";
-import { useRef } from "react";
+import { Fragment, useRef, type ReactNode } from "react";
 import type { CaptureSource, MainTab, TranscriptionResult } from "../types";
 
 interface MainPanelProps {
@@ -28,6 +28,8 @@ interface MainPanelProps {
   aiSummaryModel: string;
   onGenerateSummary: () => void;
   onOpenSummarySettings: () => void;
+  modelReady: boolean;
+  blockedReason: string | null;
 }
 
 function formatDuration(seconds: number) {
@@ -41,6 +43,47 @@ function formatLiveTimer(seconds: number) {
   const minutes = Math.floor((seconds % 3600) / 60);
   const rest = seconds % 60;
   return [hours, minutes, rest].map((value) => value.toString().padStart(2, "0")).join(":");
+}
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  const normalized = text.replace(/\*{3}(.+?)\*{3}/g, "**$1**");
+  return normalized.split(/(\*\*.+?\*\*)/g).filter(Boolean).map((part, index) => (
+    part.startsWith("**") && part.endsWith("**")
+      ? <strong key={index}>{part.slice(2, -2)}</strong>
+      : <Fragment key={index}>{part}</Fragment>
+  ));
+}
+
+function SummaryMarkdown({ content }: { content: string }) {
+  return (
+    <div className="summary-text">
+      {content.replace(/\r\n/g, "\n").split("\n").map((rawLine, index) => {
+        const line = rawLine.trim();
+        if (!line) return null;
+
+        const heading = line.match(/^(#{1,6})\s+(.+)$/);
+        if (heading) {
+          const Heading = heading[1].length <= 2 ? "h2" : "h3";
+          return <Heading key={index}>{renderInlineMarkdown(heading[2])}</Heading>;
+        }
+
+        if (/^(\*{3,}|-{3,}|_{3,})$/.test(line)) return <hr key={index} />;
+
+        const task = line.match(/^[-*]\s+\[([ xX])\]\s*(.*)$/);
+        if (task) {
+          return <div className="summary-task" key={index}><input type="checkbox" checked={task[1].toLowerCase() === "x"} readOnly /> <span>{renderInlineMarkdown(task[2])}</span></div>;
+        }
+
+        const bullet = line.match(/^[-*]\s+(.+)$/);
+        if (bullet) return <div className="summary-list-item" key={index}>{renderInlineMarkdown(bullet[1])}</div>;
+
+        const numbered = line.match(/^(\d+)\.\s+(.+)$/);
+        if (numbered) return <div className="summary-list-item numbered" key={index} data-marker={`${numbered[1]}.`}>{renderInlineMarkdown(numbered[2])}</div>;
+
+        return <p key={index}>{renderInlineMarkdown(line)}</p>;
+      })}
+    </div>
+  );
 }
 
 export function MainPanel(props: MainPanelProps) {
@@ -75,9 +118,9 @@ export function MainPanel(props: MainPanelProps) {
           </button>
           <button className="strip-action stop" type="button" onClick={props.onStop} aria-label="Dừng và hoàn tất"><CircleStop size={16} /><span>Dừng</span></button>
         </> : <>
-          <span className="capture-note">Thu trực tiếp hoặc mở file</span>
-          <button className="live-button" type="button" onClick={props.onStart}><span />Thu âm</button>
-          <button className="upload-button" type="button" onClick={() => inputRef.current?.click()} disabled={props.loading}>
+          <span className="capture-note">{props.modelReady ? "Thu trực tiếp hoặc mở file" : props.blockedReason}</span>
+          <button className="live-button" type="button" onClick={props.onStart} disabled={!props.modelReady}><span />Thu âm</button>
+          <button className="upload-button" type="button" onClick={() => inputRef.current?.click()} disabled={props.loading || !props.modelReady}>
             {props.loading ? <LoaderCircle className="spin" size={16} /> : <Upload size={16} />}
             {props.loading ? "Đang nhận diện…" : "Mở file"}
           </button>
@@ -105,9 +148,7 @@ export function MainPanel(props: MainPanelProps) {
           ) : (
             <div className="empty-state">
               <span className="empty-icon"><AudioWaveIcon /></span>
-              <h3>{props.recording ? "Đang lắng nghe…" : "Bắt đầu thu hoặc mở file âm thanh"}</h3>
-              <p>{props.recording ? "Chunk đầu tiên sẽ xuất hiện sau khoảng 4 giây, tùy tốc độ model và thiết bị." : "Thu Microphone, System Audio, cả hai, hoặc chọn file MP3/WAV/FLAC."}</p>
-              {!props.recording && <div className="empty-actions"><button type="button" className="record-empty" onClick={props.onStart}><Mic2 size={17} />Thu trực tiếp</button><button type="button" onClick={() => inputRef.current?.click()} disabled={props.loading}><Upload size={17} />Chọn file</button></div>}
+              <p>{props.recording ? "Đang lắng nghe… transcript đầu tiên sẽ xuất hiện tại đây sau vài giây." : "Transcript sẽ xuất hiện tại đây khi bạn bắt đầu thu âm hoặc mở file."}</p>
               {props.error && <p className="error-message" role="alert">{props.error}</p>}
             </div>
           )
@@ -117,8 +158,8 @@ export function MainPanel(props: MainPanelProps) {
               <div><span className="summary-document-icon"><Sparkles size={17} /></span><span><strong>Bản tóm tắt AI</strong><small>{props.aiSummaryModel}</small></span></div>
               <button type="button" onClick={props.onGenerateSummary} disabled={props.summaryLoading}>{props.summaryLoading ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}{props.summaryLoading ? "Đang tạo…" : "Tạo lại"}</button>
             </div>
-            <div className="summary-text">{props.summaryText}</div>
-            {props.summaryError && <p className="error-message" role="alert">{props.summaryError}</p>}
+            <SummaryMarkdown content={props.summaryText} />
+            {props.summaryError && <div className="summary-recovery"><p className="error-message" role="alert">{props.summaryError}</p><button type="button" onClick={props.onOpenSummarySettings}><Settings2 size={14} />Đổi model</button></div>}
           </article>
         ) : (
           <div className="empty-state summary-state">
@@ -126,7 +167,7 @@ export function MainPanel(props: MainPanelProps) {
             <h3>Tóm tắt transcript bằng AI</h3>
             <p>{props.summaryLoading ? "AI đang tạo bản tóm tắt…" : !props.result ? "Hãy thu âm hoặc mở file để có transcript trước khi tạo tóm tắt." : !props.aiSummaryConfigured ? "Kết nối Gemini, Grok, OpenAI hoặc Anthropic để bắt đầu." : `Đang sử dụng ${props.aiSummaryModel}.`}</p>
             {!props.aiSummaryConfigured ? <button type="button" onClick={props.onOpenSummarySettings}><Settings2 size={15} />Cấu hình AI</button> : <button type="button" disabled={!props.result || props.summaryLoading} onClick={props.onGenerateSummary}>{props.summaryLoading ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}{props.summaryLoading ? "Đang tạo tóm tắt…" : "Tạo bản tóm tắt"}</button>}
-            {props.summaryError && <p className="error-message" role="alert">{props.summaryError}</p>}
+            {props.summaryError && <div className="summary-recovery"><p className="error-message" role="alert">{props.summaryError}</p>{props.aiSummaryConfigured && <button type="button" onClick={props.onOpenSummarySettings}><Settings2 size={14} />Đổi model</button>}</div>}
           </div>
         )}
       </div>

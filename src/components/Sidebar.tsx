@@ -12,6 +12,7 @@ interface SidebarProps {
   onOpenSettings: () => void;
   hasResult: boolean;
   recentMeetings: RecentMeeting[];
+  onSelectMeeting: (meetingId: string) => void;
   sources: Record<CaptureSource, boolean>;
   setSources: (sources: Record<CaptureSource, boolean>) => void;
   levels: Record<CaptureSource, number>;
@@ -21,7 +22,6 @@ interface SidebarProps {
   onStart: () => void;
   onPause: () => void;
   onStop: () => void;
-  error: string | null;
   microphones: AudioDeviceInfo[];
   microphoneDevice: string | null;
   onMicrophoneChange: (device: string) => void;
@@ -29,8 +29,9 @@ interface SidebarProps {
   googleUser: GoogleUser | null;
   archiveLinks: ArchiveMeetingOutput | null;
   archiveLoading: boolean;
-  archiveError: string | null;
   onOpenArchive: (kind: "docs" | "sheet" | "calendar") => void;
+  modelReady: boolean;
+  blockedReason: string | null;
 }
 
 function formatTimer(seconds: number) {
@@ -46,6 +47,7 @@ export function Sidebar({
   onOpenSettings,
   hasResult,
   recentMeetings,
+  onSelectMeeting,
   sources,
   setSources,
   levels,
@@ -55,7 +57,6 @@ export function Sidebar({
   onStart,
   onPause,
   onStop,
-  error,
   microphones,
   microphoneDevice,
   onMicrophoneChange,
@@ -63,11 +64,18 @@ export function Sidebar({
   googleUser,
   archiveLinks,
   archiveLoading,
-  archiveError,
   onOpenArchive,
+  modelReady,
+  blockedReason,
 }: SidebarProps) {
   return (
     <aside className="sidebar">
+      <button type="button" className="account-chip" onClick={onOpenSettings}>
+        <span className="avatar">{googleUser?.picture ? <img src={googleUser.picture} alt="" referrerPolicy="no-referrer" /> : <UserRound size={17} />}</span>
+        <span><strong>{googleUser?.name ?? "Tài khoản"}</strong><small>{googleUser?.email ?? "Chưa đăng nhập Google"}</small></span>
+        <Settings2 size={16} />
+      </button>
+
       <section>
         <h2>Nguồn thu</h2>
         <div className="sidebar-card capture-card">
@@ -117,7 +125,7 @@ export function Sidebar({
         <div className="sidebar-card status-card">
           <div className="status-line">
             <span className={`status-dot ${recording && !paused ? "recording" : "idle"}`} />
-            <span>{recording ? (paused ? "Đang tạm dừng" : "Đang ghi âm") : hasResult ? "Đã hoàn tất" : "Sẵn sàng"}</span>
+            <span>{recording ? (paused ? "Đang tạm dừng" : "Đang ghi âm") : !modelReady ? "Chưa sẵn sàng" : hasResult ? "Đã hoàn tất" : "Sẵn sàng"}</span>
             <time>{formatTimer(elapsed)}</time>
           </div>
           <label className="field-label" htmlFor="session-name">Tên phiên</label>
@@ -128,14 +136,13 @@ export function Sidebar({
           />
           <div className="record-actions">
             {!recording ? (
-              <button className="start-record" type="button" onClick={onStart}><Play size={14} fill="currentColor" />Bắt đầu</button>
+              <button className="start-record" type="button" onClick={onStart} disabled={!modelReady} title={!modelReady ? blockedReason ?? undefined : undefined}><Play size={14} fill="currentColor" />Bắt đầu</button>
             ) : <>
               <button type="button" onClick={onPause}>{paused ? <Play size={14} /> : <Pause size={14} />}{paused ? "Tiếp tục" : "Tạm dừng"}</button>
               <button className="stop-record" type="button" onClick={onStop}><Square size={12} fill="currentColor" />Dừng</button>
             </>}
           </div>
-          <p className="fine-print">Tạm dừng vẫn giữ phiên hiện tại. Chọn Dừng để hoàn tất.</p>
-          {error && <p className="sidebar-error" role="alert">{error}</p>}
+          <p className="fine-print">{!modelReady ? blockedReason : "Tạm dừng vẫn giữ phiên hiện tại. Chọn Dừng để hoàn tất."}</p>
         </div>
       </section>
 
@@ -147,19 +154,18 @@ export function Sidebar({
           <button type="button" className="archive-calendar" disabled={!googleUser || archiveLoading} onClick={() => onOpenArchive("calendar")}><CalendarDays size={14} />Calendar</button>
         </div>
         {archiveLoading && <p className="archive-status" role="status"><LoaderCircle className="spin" size={13} />Đang lưu vào Google…</p>}
-        {archiveError && <p className="archive-error" role="alert">{archiveError}</p>}
       </section>
 
       <section className="recent-section">
         <h2>Gần đây</h2>
         {recentMeetings.length ? recentMeetings.map((meeting) => (
-          <div className="recent-item" key={meeting.id}>
+          <button className="recent-item" type="button" key={meeting.id} onClick={() => onSelectMeeting(meeting.id)} disabled={meeting.status !== "completed"}>
             <span>
               <strong>{meeting.title || "Phiên chưa đặt tên"}</strong>
-              <small>{meeting.status === "recording" ? "Đang ghi âm" : meeting.status === "paused" ? "Đang tạm dừng" : "Đã hoàn tất"}</small>
+              <small>{meeting.status === "recording" ? "Đang ghi âm" : meeting.status === "paused" ? "Đang tạm dừng" : meeting.summaryStatus === "failed" ? "Transcript đã lưu · Tóm tắt lỗi" : meeting.summaryStatus === "completed" ? "Đã có bản tóm tắt" : "Transcript đã lưu"}</small>
             </span>
             <ChevronRight size={14} />
-          </div>
+          </button>
         )) : (
           <div className="recent-item empty-recent">
             <span><strong>Chưa có phiên nào</strong><small>Thu âm hoặc tải file để bắt đầu</small></span>
@@ -167,11 +173,6 @@ export function Sidebar({
         )}
       </section>
 
-      <button type="button" className="account-chip" onClick={onOpenSettings}>
-        <span className="avatar">{googleUser?.picture ? <img src={googleUser.picture} alt="" referrerPolicy="no-referrer" /> : <UserRound size={17} />}</span>
-        <span><strong>{googleUser?.name ?? "Tài khoản"}</strong><small>{googleUser?.email ?? "Chưa đăng nhập Google"}</small></span>
-        <Settings2 size={16} />
-      </button>
     </aside>
   );
 }

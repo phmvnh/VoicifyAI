@@ -91,7 +91,7 @@ export function SettingsModal({ onClose, theme, onThemeChange, googleAuth, googl
                   disabled={googleBusy || (!googleAuth.configured && !googleAuth.user)}
                 >
                   {googleBusy && <LoaderCircle className="spin" size={14} />}
-                  {googleBusy ? "Đang xử lý…" : googleAuth.user ? "Ngắt kết nối" : "Đăng nhập với Google"}
+                  {googleBusy ? "Đang xử lý…" : googleAuth.user ? "Đăng xuất" : "Đăng nhập với Google"}
                 </button>
               </div>
               {googleError && <p className="google-auth-error" role="alert">{googleError}</p>}
