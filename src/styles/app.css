@@ -6,7 +6,8 @@
 .window-actions button { width: 46px; border: 0; background: transparent; display: grid; place-items: center; }
 .window-actions button:hover { background: var(--fill-strong); }
 .window-actions .close:hover { color: white; background: #c42b1c; }
-.workspace { height: calc(100vh - 44px); min-height: 0; display: grid; grid-template-columns: 250px minmax(430px, 1fr) 270px; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+.workspace { height: 100vh; min-height: 0; display: grid; grid-template-columns: 250px minmax(430px, 1fr) 270px; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+.titlebar + .workspace { height: calc(100vh - 44px); }
 .sidebar, .inspector { overflow-y: auto; scrollbar-width: thin; }
 .sidebar { padding: 18px 16px 12px; background: var(--sidebar-bg); backdrop-filter: blur(28px) saturate(160%); border-right: 1px solid var(--separator); display: flex; flex-direction: column; gap: 20px; }
 .sidebar section h2, .inspector h2 { margin: 0 0 8px; color: var(--text-secondary); font-size: 12px; font-weight: 650; }

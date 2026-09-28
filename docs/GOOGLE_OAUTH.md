@@ -1,7 +1,8 @@
-# Google OAuth cho VoicifyAI Desktop
+# Google OAuth cho VoicifyAI Desktop và Web
 
-VoicifyAI hiện là ứng dụng desktop/native. Google OAuth được xử lý duy nhất trong lớp
-Rust/Tauri; FastAPI chạy local tại `127.0.0.1:8765` không tham gia đăng nhập Google.
+VoicifyAI dùng hai OAuth Client riêng cho hai runtime. Desktop xử lý OAuth trong
+Rust/Tauri; bản web dùng Google Identity Services trong trình duyệt. FastAPI chạy
+local tại `127.0.0.1:8765` không tham gia đăng nhập Google.
 
 ## Kiến trúc hiện tại
 
@@ -41,6 +42,27 @@ client thực tế từ chối token exchange nếu thiếu tham số này. Vì 
 app vẫn là public client: giá trị nhúng trong executable có thể bị trích xuất và tuyệt
 đối không được xem là ranh giới bảo mật. PKCE S256 mới bảo vệ authorization code; token
 exchange còn gửi client ID, redirect URI và grant type.
+
+## Cấu hình bản web
+
+1. Trong cùng Google Cloud project, tạo thêm OAuth Client ID với **Application
+   type = Web application**. Không dùng Desktop Client ID cho bản web.
+2. Thêm hostname HTTPS của VoicifyAI vào **Authorized JavaScript origins**.
+3. Khai báo Client ID trong `.env`:
+
+   ```env
+   VITE_GOOGLE_WEB_CLIENT_ID=your-web-client-id.apps.googleusercontent.com
+   ```
+
+4. Khởi động lại Vite sau khi sửa `.env`.
+
+Google không chấp nhận raw IP là JavaScript origin, vì vậy
+`https://10.59.69.84:1420` dù dùng được microphone nhưng không thể dùng là
+OAuth Web origin. Cần truy cập qua hostname HTTPS hợp lệ (hoặc `localhost` khi
+chạy ngay trên máy client) và khai báo đúng origin đó trong Google Cloud.
+
+Bản web giữ access token trong `sessionStorage`; token hết khi phiên tab hết hoặc
+hết hạn. Client secret không được đưa vào frontend.
 
 OAuth client thuộc về Google Cloud project, không thuộc riêng tài khoản Gmail đã bấm
 tạo project. Quyền sở hữu/quản trị project có thể được chia sẻ hoặc chuyển cho tài

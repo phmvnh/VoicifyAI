@@ -43,6 +43,10 @@ hoặc cả hai rồi nhấn **Bắt đầu**.
 - Hai nguồn được giữ riêng để xử lý song song, sau đó ghép thành transcript liên tục theo thời gian.
 - Audio được chuyển thành mono 16 kHz trong Rust, chia chunk 4 giây với overlap 0,5 giây.
 
+Khi chạy bằng trình duyệt tại `http://127.0.0.1:1420`, frontend dùng Web Audio API
+cho microphone và `getDisplayMedia` cho audio của tab/màn hình. Dữ liệu vẫn dùng cùng
+protocol WebSocket PCM16 nên không cần khởi động Tauri.
+
 ## Đăng nhập Google
 
 FastAPI local không xử lý Google OAuth. Đăng nhập được thực hiện trong Rust/Tauri bằng

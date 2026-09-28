@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
-use tungstenite::{connect, Message};
+use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 use wasapi::{initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
 const TARGET_RATE: u32 = 16_000;
@@ -18,6 +18,24 @@ const CHUNK_SECONDS: usize = 4;
 const OVERLAP_SAMPLES: usize = 8_000;
 const CHUNK_SAMPLES: usize = TARGET_RATE as usize * CHUNK_SECONDS;
 const STEP_SAMPLES: usize = CHUNK_SAMPLES - OVERLAP_SAMPLES;
+const MAX_STREAM_RECONNECTS: usize = 3;
+const STREAM_RECONNECT_DELAY: Duration = Duration::from_millis(300);
+
+type StreamingSocket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+#[derive(Debug)]
+enum StreamMessageError {
+    Connection(String),
+    Fatal(String),
+}
+
+impl StreamMessageError {
+    fn into_message(self) -> String {
+        match self {
+            Self::Connection(message) | Self::Fatal(message) => message,
+        }
+    }
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -509,16 +527,7 @@ fn stream_audio(
     _session_started: Instant,
     app: &AppHandle,
 ) -> Result<(), String> {
-    let (mut socket, _) = connect(websocket_url)
-        .map_err(|error| format!("Không thể kết nối API streaming tại {websocket_url}: {error}"))?;
-    let handshake = serde_json::json!({ "source": source, "config": config });
-    socket
-        .send(Message::Text(handshake.to_string().into()))
-        .map_err(|error| error.to_string())?;
-    let ready = socket.read().map_err(|error| error.to_string())?;
-    if !ready.is_text() {
-        return Err("API streaming không xác nhận kết nối".to_string());
-    }
+    let mut socket = connect_stream(websocket_url, source, &config)?;
 
     let mut resampler: Option<LinearResampler> = None;
     let mut rolling = Vec::<f32>::new();
@@ -553,7 +562,15 @@ fn stream_audio(
         while rolling.len() >= CHUNK_SAMPLES {
             let samples = rolling[..CHUNK_SAMPLES].to_vec();
             let start_sec = chunk_index as f64 * STEP_SAMPLES as f64 / TARGET_RATE as f64;
-            send_chunk(&mut socket, source, start_sec, &samples, app)?;
+            send_chunk_with_reconnect(
+                &mut socket,
+                websocket_url,
+                source,
+                &config,
+                start_sec,
+                &samples,
+                app,
+            )?;
             rolling.drain(..STEP_SAMPLES);
             chunk_index += 1;
         }
@@ -561,7 +578,15 @@ fn stream_audio(
 
     if rolling.len() >= TARGET_RATE as usize / 2 {
         let start_sec = chunk_index as f64 * STEP_SAMPLES as f64 / TARGET_RATE as f64;
-        let _ = send_chunk(&mut socket, source, start_sec, &rolling, app);
+        let _ = send_chunk_with_reconnect(
+            &mut socket,
+            websocket_url,
+            source,
+            &config,
+            start_sec,
+            &rolling,
+            app,
+        );
     }
     let _ = socket.close(None);
     let _ = app.emit(
@@ -574,13 +599,113 @@ fn stream_audio(
     Ok(())
 }
 
-fn send_chunk<S: std::io::Read + std::io::Write>(
-    socket: &mut tungstenite::WebSocket<S>,
+fn connect_stream(
+    websocket_url: &str,
     source: &str,
+    config: &Value,
+) -> Result<StreamingSocket, String> {
+    let (mut socket, _) = connect(websocket_url)
+        .map_err(|error| format!("Không thể kết nối API streaming tại {websocket_url}: {error}"))?;
+    let handshake = serde_json::json!({ "source": source, "config": config });
+    socket
+        .send(Message::Text(handshake.to_string().into()))
+        .map_err(|error| format!("Không thể gửi cấu hình streaming: {error}"))?;
+    let ready = read_server_message(&mut socket).map_err(StreamMessageError::into_message)?;
+    if ready.kind == "error" {
+        return Err(ready
+            .message
+            .unwrap_or_else(|| "API streaming từ chối kết nối".to_string()));
+    }
+    if ready.kind != "ready" {
+        return Err(format!(
+            "API streaming không xác nhận kết nối (nhận '{}')",
+            ready.kind
+        ));
+    }
+    Ok(socket)
+}
+
+fn read_server_message<S: std::io::Read + std::io::Write>(
+    socket: &mut WebSocket<S>,
+) -> Result<ServerMessage, StreamMessageError> {
+    loop {
+        let message = socket
+            .read()
+            .map_err(|error| StreamMessageError::Connection(error.to_string()))?;
+        match message {
+            Message::Text(text) => {
+                return serde_json::from_str(&text).map_err(|error| {
+                    StreamMessageError::Fatal(format!("Phản hồi streaming không hợp lệ: {error}"))
+                });
+            }
+            Message::Ping(_) => {
+                // tungstenite queues the Pong automatically; flush it now instead of
+                // waiting for the next audio chunk, which may still be in inference.
+                socket
+                    .flush()
+                    .map_err(|error| StreamMessageError::Connection(error.to_string()))?;
+            }
+            Message::Pong(_) => {}
+            Message::Close(frame) => {
+                let detail = frame
+                    .map(|frame| format!("{} ({})", frame.reason, frame.code))
+                    .unwrap_or_else(|| "không có lý do".to_string());
+                return Err(StreamMessageError::Connection(format!(
+                    "API streaming đã đóng kết nối: {detail}"
+                )));
+            }
+            Message::Binary(_) => {
+                return Err(StreamMessageError::Fatal(
+                    "API streaming trả về dữ liệu nhị phân không mong đợi".to_string(),
+                ));
+            }
+            Message::Frame(_) => {}
+        }
+    }
+}
+
+fn send_chunk_with_reconnect(
+    socket: &mut StreamingSocket,
+    websocket_url: &str,
+    source: &str,
+    config: &Value,
     start_sec: f64,
     samples: &[f32],
     app: &AppHandle,
 ) -> Result<(), String> {
+    let mut last_connection_error = None;
+    for attempt in 0..=MAX_STREAM_RECONNECTS {
+        if attempt > 0 {
+            thread::sleep(STREAM_RECONNECT_DELAY);
+            match connect_stream(websocket_url, source, config) {
+                Ok(reconnected) => *socket = reconnected,
+                Err(error) => {
+                    last_connection_error = Some(error);
+                    continue;
+                }
+            }
+        }
+        match send_chunk(socket, source, start_sec, samples, app) {
+            Ok(()) => return Ok(()),
+            Err(StreamMessageError::Fatal(message)) => return Err(message),
+            Err(StreamMessageError::Connection(message)) => {
+                last_connection_error = Some(message);
+            }
+        }
+    }
+    Err(format!(
+        "Mất kết nối API streaming sau {MAX_STREAM_RECONNECTS} lần thử lại: {}",
+        last_connection_error.unwrap_or_else(|| "lỗi kết nối không xác định".to_string())
+    ))
+}
+
+fn send_chunk<S: std::io::Read + std::io::Write>(
+    socket: &mut WebSocket<S>,
+    source: &str,
+    start_sec: f64,
+    samples: &[f32],
+    app: &AppHandle,
+) -> Result<(), StreamMessageError> {
     let mut packet = Vec::with_capacity(8 + samples.len() * 2);
     packet.extend_from_slice(&start_sec.to_le_bytes());
     for sample in samples {
@@ -589,22 +714,26 @@ fn send_chunk<S: std::io::Read + std::io::Write>(
     }
     socket
         .send(Message::Binary(packet.into()))
-        .map_err(|error| error.to_string())?;
-    let message = socket.read().map_err(|error| error.to_string())?;
-    if let Message::Text(text) = message {
-        let parsed: ServerMessage =
-            serde_json::from_str(&text).map_err(|error| error.to_string())?;
-        if parsed.kind == "error" {
-            return Err(parsed
+        .map_err(|error| StreamMessageError::Connection(error.to_string()))?;
+    let parsed = read_server_message(socket)?;
+    if parsed.kind == "error" {
+        return Err(StreamMessageError::Fatal(
+            parsed
                 .message
-                .unwrap_or_else(|| "Lỗi streaming không xác định".into()));
-        }
-        let mut payload = parsed.payload;
-        payload.insert("type".into(), Value::String(parsed.kind));
-        payload.insert("source".into(), Value::String(source.to_string()));
-        app.emit("transcript-segment", payload)
-            .map_err(|error| error.to_string())?;
+                .unwrap_or_else(|| "Lỗi streaming không xác định".into()),
+        ));
     }
+    if parsed.kind != "transcript" {
+        return Err(StreamMessageError::Fatal(format!(
+            "Phản hồi streaming không mong đợi: {}",
+            parsed.kind
+        )));
+    }
+    let mut payload = parsed.payload;
+    payload.insert("type".into(), Value::String(parsed.kind));
+    payload.insert("source".into(), Value::String(source.to_string()));
+    app.emit("transcript-segment", payload)
+        .map_err(|error| StreamMessageError::Fatal(error.to_string()))?;
     Ok(())
 }
 
@@ -630,6 +759,37 @@ fn emit_error(app: &AppHandle, source: &str, message: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Cursor, Read, Write};
+    use tungstenite::protocol::Role;
+
+    struct TestStream {
+        input: Cursor<Vec<u8>>,
+        output: Vec<u8>,
+    }
+
+    impl Read for TestStream {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.input.read(buffer)
+        }
+    }
+
+    impl Write for TestStream {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.output.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn server_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+        assert!(payload.len() < 126);
+        let mut frame = vec![0x80 | opcode, payload.len() as u8];
+        frame.extend_from_slice(payload);
+        frame
+    }
 
     #[test]
     fn resampler_converts_48khz_to_16khz() {
@@ -643,5 +803,22 @@ mod tests {
     fn rms_level_is_bounded() {
         assert_eq!(rms_level(&[]), 0.0);
         assert_eq!(rms_level(&[1.0, -1.0]), 1.0);
+    }
+
+    #[test]
+    fn server_message_flushes_ping_and_waits_for_text() {
+        let response = br#"{"type":"transcript","text":"xin chao"}"#;
+        let mut input = server_frame(0x9, b"heartbeat");
+        input.extend(server_frame(0x1, response));
+        let stream = TestStream {
+            input: Cursor::new(input),
+            output: Vec::new(),
+        };
+        let mut socket = WebSocket::from_raw_socket(stream, Role::Client, None);
+
+        let message = read_server_message(&mut socket).expect("text response after ping");
+
+        assert_eq!(message.kind, "transcript");
+        assert!(!socket.get_ref().output.is_empty(), "Pong must be flushed");
     }
 }

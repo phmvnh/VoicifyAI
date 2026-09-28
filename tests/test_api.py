@@ -11,6 +11,52 @@ from api.main import app, engine
 client = TestClient(app)
 
 
+def test_web_ai_summary_contract(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "_generate_ai_summary",
+        lambda request: {
+            "title": "Họp sản phẩm",
+            "text": "## Summary\n- Hoàn tất MVP",
+            "provider": request.provider,
+            "model": request.model,
+        },
+    )
+    response = client.post("/v1/ai/summary", json={
+        "provider": "gemini",
+        "model": "gemini-flash-latest",
+        "api_key": "test-key",
+        "transcript": "Nội dung cuộc họp",
+        "mode": "bullets",
+    })
+    assert response.status_code == 200
+    assert response.json()["title"] == "Họp sản phẩm"
+
+
+def test_web_ai_summary_rejects_empty_transcript():
+    response = client.post("/v1/ai/summary", json={
+        "provider": "gemini",
+        "model": "gemini-flash-latest",
+        "api_key": "test-key",
+        "transcript": "",
+        "mode": "bullets",
+    })
+    assert response.status_code == 422
+
+
+def test_web_ai_summary_prompt_ignores_promotional_noise():
+    request = main.AiSummaryRequest(
+        provider="gemini",
+        model="gemini-flash-latest",
+        api_key="test-key",
+        transcript="Nội dung cuộc họp",
+        mode="bullets",
+    )
+    prompt = main._summary_prompt(request)
+    assert "Hãy subscribe cho kênh La La School" in prompt
+    assert "Bỏ qua" in main.AI_SYSTEM_PROMPT
+
+
 def test_health_before_model_load(monkeypatch):
     monkeypatch.setattr(engine, "status", lambda: {"model_loaded": False, "model_config": None})
     response = client.get("/v1/health")

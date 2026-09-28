@@ -179,7 +179,6 @@ export function Inspector({ config, setConfig, models, languages, result, record
         {config.model.endsWith(".en") && <p className="hint warning">Model {config.model} chỉ hỗ trợ tiếng Anh.</p>}
         <div className="control-list">
           <div><span>Silero VAD<small>Lọc khoảng lặng</small></span><Toggle checked={config.vad_filter} onChange={(value) => patch({ vad_filter: value })} label="Silero VAD" /></div>
-          <div><span>Dịch sang tiếng Anh<small>Whisper translate</small></span><Toggle checked={config.task === "translate"} onChange={(value) => patch({ task: value ? "translate" : "transcribe" })} label="Dịch sang tiếng Anh" /></div>
         </div>
       </section>
 

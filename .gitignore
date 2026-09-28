@@ -33,3 +33,5 @@ src-tauri/target/
 .env
 .env.*
 !.env.example
+/certs/
+/.tools/mkcert.exe

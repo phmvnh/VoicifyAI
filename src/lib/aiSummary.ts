@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { AiProvider, AiSummaryConfigStatus, AiSummaryOutput, SaveAiSummaryConfigInput, SummaryMode } from "../types";
+import { isTauriRuntime, webApiBase } from "./runtime";
 
 export interface AiProviderOption {
   id: AiProvider;
@@ -35,8 +35,86 @@ export const AI_PROVIDERS: AiProviderOption[] = [
 
 export const DEFAULT_AI_CONFIG: AiSummaryConfigStatus = { provider: "gemini", model: AI_PROVIDERS[0].models[0].id, configured: false, configuredProviders: [], storageError: null };
 
-export const getAiSummaryStatus = () => invoke<AiSummaryConfigStatus>("ai_summary_status");
-export const saveAiSummaryConfig = (input: SaveAiSummaryConfigInput) => invoke<AiSummaryConfigStatus>("save_ai_summary_config", { input });
-export const clearAiSummaryConfig = () => invoke<AiSummaryConfigStatus>("clear_ai_summary_config");
-export const generateAiSummary = (transcript: string, mode: SummaryMode, customInstruction: string) => invoke<AiSummaryOutput>("generate_ai_summary", { input: { transcript, mode, customInstruction: customInstruction || null } });
+const WEB_AI_KEY = "voicifyai-web-ai-config-v1";
+
+interface WebAiConfig {
+  provider: AiProvider;
+  model: string;
+  keys: Partial<Record<AiProvider, string>>;
+}
+
+function readWebConfig(): WebAiConfig | null {
+  try {
+    return JSON.parse(sessionStorage.getItem(WEB_AI_KEY) ?? "null") as WebAiConfig | null;
+  } catch {
+    return null;
+  }
+}
+
+function webStatus(): AiSummaryConfigStatus {
+  const stored = readWebConfig();
+  if (!stored) return DEFAULT_AI_CONFIG;
+  const configuredProviders = Object.entries(stored.keys)
+    .filter(([, key]) => Boolean(key))
+    .map(([provider]) => provider as AiProvider);
+  return {
+    provider: stored.provider,
+    model: stored.model,
+    configured: Boolean(stored.keys[stored.provider]),
+    configuredProviders,
+    storageError: null,
+  };
+}
+
+async function tauriInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(command, args);
+}
+
+export async function getAiSummaryStatus(): Promise<AiSummaryConfigStatus> {
+  return isTauriRuntime() ? tauriInvoke<AiSummaryConfigStatus>("ai_summary_status") : webStatus();
+}
+
+export async function saveAiSummaryConfig(input: SaveAiSummaryConfigInput): Promise<AiSummaryConfigStatus> {
+  if (isTauriRuntime()) return tauriInvoke<AiSummaryConfigStatus>("save_ai_summary_config", { input });
+  const current = readWebConfig();
+  const apiKey = input.apiKey.trim() || current?.keys[input.provider];
+  if (!apiKey) throw new Error("Hãy nhập API key cho nhà cung cấp đã chọn.");
+  sessionStorage.setItem(WEB_AI_KEY, JSON.stringify({
+    provider: input.provider,
+    model: input.model,
+    keys: { ...(current?.keys ?? {}), [input.provider]: apiKey },
+  } satisfies WebAiConfig));
+  return webStatus();
+}
+
+export async function clearAiSummaryConfig(): Promise<AiSummaryConfigStatus> {
+  if (isTauriRuntime()) return tauriInvoke<AiSummaryConfigStatus>("clear_ai_summary_config");
+  sessionStorage.removeItem(WEB_AI_KEY);
+  return DEFAULT_AI_CONFIG;
+}
+
+export async function generateAiSummary(transcript: string, mode: SummaryMode, customInstruction: string): Promise<AiSummaryOutput> {
+  if (isTauriRuntime()) {
+    return tauriInvoke<AiSummaryOutput>("generate_ai_summary", { input: { transcript, mode, customInstruction: customInstruction || null } });
+  }
+  const config = readWebConfig();
+  const apiKey = config?.keys[config.provider];
+  if (!config || !apiKey) throw new Error("Chưa cấu hình dịch vụ AI Summary.");
+  const response = await fetch(`${webApiBase()}/v1/ai/summary`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      provider: config.provider,
+      model: config.model,
+      api_key: apiKey,
+      transcript,
+      mode,
+      custom_instruction: customInstruction || null,
+    }),
+  });
+  const body = await response.json().catch(() => null) as (AiSummaryOutput & { detail?: string }) | null;
+  if (!response.ok) throw new Error(body?.detail ?? `API tóm tắt trả về mã ${response.status}.`);
+  return body as AiSummaryOutput;
+}
 export const providerLabel = (provider: AiProvider) => AI_PROVIDERS.find((item) => item.id === provider)?.label ?? provider;

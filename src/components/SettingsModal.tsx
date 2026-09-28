@@ -82,7 +82,7 @@ export function SettingsModal({ onClose, theme, onThemeChange, googleAuth, googl
                 {googleAuth.user?.picture ? <img className="google-avatar" src={googleAuth.user.picture} alt="" referrerPolicy="no-referrer" /> : <span className="google-mark">G</span>}
                 <div>
                   <strong>{googleAuth.user?.name ?? "Chưa đăng nhập"}</strong>
-                  <p>{googleAuth.user?.email ?? (googleAuth.configured ? "Đăng nhập an toàn qua trình duyệt Google" : "Cần cấu hình OAuth Client trước khi đăng nhập")}</p>
+                  <p>{googleAuth.user?.email ?? (googleAuth.configured ? "Đăng nhập an toàn qua trình duyệt Google" : googleAuth.configurationHint ?? "Cần cấu hình OAuth Client trước khi đăng nhập")}</p>
                 </div>
                 <button
                   type="button"

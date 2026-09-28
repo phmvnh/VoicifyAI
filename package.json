@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:web": "node scripts/dev-desktop.mjs",
     "dev:desktop": "node scripts/dev-desktop.mjs",
     "build": "tsc && vite build",
     "check": "tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml",

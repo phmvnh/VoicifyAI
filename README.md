@@ -109,7 +109,16 @@ Model được tải từ Hugging Face và lưu trong cache trên máy. Thời g
 
 ## Chạy riêng từng thành phần
 
-Chạy FastAPI:
+Chạy toàn bộ bản web bằng một lệnh:
+
+```powershell
+npm run dev:web
+```
+
+Sau đó mở `http://127.0.0.1:1420`. Lệnh này khởi động cả FastAPI và Vite, nhưng
+không mở cửa sổ Tauri.
+
+Nếu cần chạy riêng từng tiến trình, chạy FastAPI:
 
 ```powershell
 python -m uvicorn api.main:app --host 127.0.0.1 --port 8765
@@ -117,13 +126,23 @@ python -m uvicorn api.main:app --host 127.0.0.1 --port 8765
 
 Swagger UI sẽ có tại `http://127.0.0.1:8765/docs`. Xem thêm ví dụ gọi API trong [api/README.md](api/README.md).
 
-Chạy riêng giao diện web:
+Sau đó chạy riêng giao diện web ở terminal khác:
 
 ```powershell
 npm run dev
 ```
 
-Giao diện web có thể hiển thị độc lập, nhưng các chức năng dùng Tauri như thu âm, keyring và tích hợp Google cần được chạy qua `npm run tauri dev`.
+Mở `http://127.0.0.1:1420`. Bản web hiện hỗ trợ:
+
+- Mở file và phiên âm qua FastAPI.
+- Thu microphone trực tiếp bằng Web Audio API.
+- Thu âm thanh tab/màn hình khi trình duyệt hỗ trợ và người dùng bật chia sẻ audio.
+- Lưu lịch sử transcript trong local storage của trình duyệt.
+- Tạo AI Summary qua FastAPI; API key chỉ được giữ trong session của tab.
+
+Google Archive hiện vẫn chỉ có trên bản Tauri. Trước khi chạy web, FastAPI phải đang
+chạy tại `http://127.0.0.1:8765` như hướng dẫn phía trên. Dùng `npm run tauri dev` khi
+cần bản desktop với WASAPI, Credential Manager và Google OAuth dạng Desktop app.
 
 ## Google OAuth
 

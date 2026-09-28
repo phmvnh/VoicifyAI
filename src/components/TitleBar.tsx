@@ -1,8 +1,9 @@
 import { AudioLines, Minus, Square, X } from "lucide-react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isTauriRuntime } from "../lib/runtime";
 
 async function runWindowAction(action: "minimize" | "maximize" | "close") {
   try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
     const window = getCurrentWindow();
     if (action === "maximize") await window.toggleMaximize();
     else await window[action]();
@@ -12,6 +13,7 @@ async function runWindowAction(action: "minimize" | "maximize" | "close") {
 }
 
 export function TitleBar() {
+  if (!isTauriRuntime()) return null;
   return (
     <header className="titlebar" data-tauri-drag-region>
       <div className="brand" data-tauri-drag-region>

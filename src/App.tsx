@@ -10,7 +10,7 @@ import { clearAiSummaryConfig, DEFAULT_AI_CONFIG, generateAiSummary, getAiSummar
 import { cancelGpuRuntimeInstall, cancelModelDownload, downloadModel, fetchGpuRuntimeStatus, fetchHardwareStatus, fetchLanguages, fetchModels, fetchModelStatuses, installGpuRuntime, removeGpuRuntime, removeModel, transcribeFile } from "./lib/engineClient";
 import { buildLanguageOptions, type LanguageOption } from "./lib/languages";
 import { archiveMeeting, openArchiveUrl, prepareArchiveDestinations, type ArchiveDestinationsOutput, type ArchiveMeetingOutput } from "./lib/meetingArchive";
-import { getMeetingTranscript, saveMeetingSummary, saveMeetingTranscript, type StoredMeeting } from "./lib/meetingHistory";
+import { getMeetingTranscript, listMeetingTranscripts, saveMeetingSummary, saveMeetingTranscript, type StoredMeeting } from "./lib/meetingHistory";
 import { cancelGoogleSignIn, getGoogleAuthStatus, signInWithGoogle, signOutGoogle, type GoogleAuthStatus } from "./lib/googleAuth";
 import {
   listenToLiveEvents,
@@ -21,6 +21,7 @@ import {
 } from "./lib/liveAudioClient";
 import type { AudioDeviceInfo } from "./lib/liveAudioClient";
 import type { AiSummaryConfigStatus, CaptureSource, EngineConfig, GpuRuntimeStatus, HardwareStatus, MainTab, ModelStatus, RecentMeeting, SaveAiSummaryConfigInput, ThemeMode, TranscriptionResult } from "./types";
+import { createRuntimeId } from "./lib/runtime";
 
 const visibleModels = ["tiny", "base", "small", "medium", "turbo", "large-v3"];
 const fallbackLanguageCodes = ["vi", "en", "zh", "ja", "ko", "fr", "de", "es", "pt", "it", "ru", "th", "ar"];
@@ -82,7 +83,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [sources, setSources] = useState<Record<CaptureSource, boolean>>({ mic: true, system: false });
   const [microphones, setMicrophones] = useState<AudioDeviceInfo[]>([]);
-  const [microphoneDevice, setMicrophoneDevice] = useState<string | null>(null);
+  const [microphoneDevice, setMicrophoneDevice] = useState<string | null>(() =>
+    localStorage.getItem("voicifyai-microphone-device"),
+  );
   const [levels, setLevels] = useState<Record<CaptureSource, number>>({ mic: 0, system: 0 });
   const [recording, setRecording] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -195,6 +198,14 @@ export default function App() {
   };
 
   useEffect(() => {
+    listMeetingTranscripts()
+      .then((meetings) => setRecentMeetings(meetings.map((meeting) => ({
+        id: meeting.id,
+        title: meeting.title,
+        status: "completed",
+        summaryStatus: meeting.summaryStatus,
+      }))))
+      .catch(() => undefined);
     fetchModels()
       .then((availableModels) => {
         const supportedModels = visibleModels.filter((model) => availableModels.includes(model));
@@ -521,7 +532,17 @@ export default function App() {
 
   useEffect(() => {
     void refreshMicrophones();
+    const mediaDevices = navigator.mediaDevices;
+    if (!mediaDevices?.addEventListener) return;
+    const handleDeviceChange = () => void refreshMicrophones();
+    mediaDevices.addEventListener("devicechange", handleDeviceChange);
+    return () => mediaDevices.removeEventListener("devicechange", handleDeviceChange);
   }, []);
+
+  useEffect(() => {
+    if (microphoneDevice) localStorage.setItem("voicifyai-microphone-device", microphoneDevice);
+    else localStorage.removeItem("voicifyai-microphone-device");
+  }, [microphoneDevice]);
 
   useEffect(() => {
     if (config.model.endsWith(".en") && config.language !== null && config.language !== "en") {
@@ -623,7 +644,7 @@ export default function App() {
       setResult(nextResult);
       const endedAt = new Date();
       meetingContext.current = {
-        id: crypto.randomUUID(),
+        id: createRuntimeId(),
         startedAt: new Date(endedAt.getTime() - Math.max(nextResult.duration, 1) * 1000).toISOString(),
         endedAt: endedAt.toISOString(),
       };
@@ -672,7 +693,7 @@ export default function App() {
     activeCaptureSources.current = selected;
     finishedTranscriptStreams.current.clear();
     const nextMeeting: MeetingContext = {
-      id: crypto.randomUUID(),
+      id: createRuntimeId(),
       startedAt: new Date().toISOString(),
       endedAt: null,
     };

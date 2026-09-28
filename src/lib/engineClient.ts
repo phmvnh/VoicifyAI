@@ -1,6 +1,7 @@
 import type { EngineConfig, GpuRuntimeStatus, HardwareStatus, ModelStatus, TranscriptionResult } from "../types";
+import { webApiBase } from "./runtime";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8765";
+const API_BASE = webApiBase();
 
 async function readError(response: Response): Promise<string> {
   try {

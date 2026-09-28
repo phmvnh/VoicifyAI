@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { isTauriRuntime } from "./runtime";
 
 export interface ArchiveMeetingInput {
   meetingId: string;
@@ -33,21 +33,31 @@ export interface ArchiveNamingSettings {
 }
 
 export function archiveMeeting(input: ArchiveMeetingInput): Promise<ArchiveMeetingOutput> {
-  return invoke<ArchiveMeetingOutput>("archive_meeting", { input });
+  return tauriOnly<ArchiveMeetingOutput>("archive_meeting", { input });
 }
 
 export function prepareArchiveDestinations(): Promise<ArchiveDestinationsOutput> {
-  return invoke<ArchiveDestinationsOutput>("prepare_archive_destinations");
+  return tauriOnly<ArchiveDestinationsOutput>("prepare_archive_destinations");
 }
 
 export function getArchiveNamingSettings(): Promise<ArchiveNamingSettings> {
-  return invoke<ArchiveNamingSettings>("archive_naming_settings");
+  return tauriOnly<ArchiveNamingSettings>("archive_naming_settings");
 }
 
 export function saveArchiveNamingSettings(input: ArchiveNamingSettings): Promise<ArchiveNamingSettings> {
-  return invoke<ArchiveNamingSettings>("save_archive_naming_settings", { input });
+  return tauriOnly<ArchiveNamingSettings>("save_archive_naming_settings", { input });
 }
 
 export function openArchiveUrl(url: string): Promise<void> {
-  return invoke("open_archive_url", { url });
+  if (!isTauriRuntime()) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return Promise.resolve();
+  }
+  return tauriOnly<void>("open_archive_url", { url });
+}
+
+async function tauriOnly<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!isTauriRuntime()) throw new Error("Google Archive chưa được cấu hình cho bản web.");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(command, args);
 }

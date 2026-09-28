@@ -2,6 +2,7 @@ import { Eye, EyeOff, KeyRound, LoaderCircle, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AI_PROVIDERS } from "../lib/aiSummary";
 import type { AiProvider, AiSummaryConfigStatus, SaveAiSummaryConfigInput } from "../types";
+import { isTauriRuntime } from "../lib/runtime";
 
 interface SummaryApiConfigProps {
   status: AiSummaryConfigStatus;
@@ -95,7 +96,7 @@ export function SummaryApiConfig({ status, showHeading = true, onSave, onClear }
         {(error || status.storageError) && <p className="summary-config-error" role="alert">{error ?? status.storageError}</p>}
         {success && <p className="summary-config-success" role="status">Kết nối thành công với {providerOption.label} · {model}</p>}
         <div className="summary-api-footer">
-          <p>API key được lưu trong trình quản lý thông tin đăng nhập của hệ điều hành.</p>
+          <p>{isTauriRuntime() ? "API key được lưu trong trình quản lý thông tin đăng nhập của hệ điều hành." : "API key chỉ được giữ trong phiên làm việc của tab trình duyệt."}</p>
           <div>
             {(status.configured || status.storageError) && <button type="button" className="clear-ai-config" disabled={busy} onClick={clear} aria-label="Xóa cấu hình AI"><Trash2 size={13} /></button>}
             <button type="button" disabled={busy || !canSave} onClick={save}>{busy && <LoaderCircle className="spin" size={13} />}{busy ? "Đang kết nối…" : "Kết nối"}</button>

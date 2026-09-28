@@ -1,5 +1,8 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+
+if (existsSync(".env")) process.loadEnvFile(".env");
 
 const children = [];
 let stopping = false;
@@ -57,7 +60,8 @@ if (!(await apiIsRunning())) {
   const python = process.platform === "win32" ? "python.exe" : "python3";
   start(
     python,
-    ["-m", "uvicorn", "api.main:app", "--host", "127.0.0.1", "--port", "8765"],
+    // Dùng "127.0.0.1" thay cho "0.0.0.0" nếu chỉ muốn chạy local.
+    ["-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8765"],
     "FastAPI",
   );
 } else {
